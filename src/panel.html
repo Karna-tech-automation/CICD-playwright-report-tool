@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Perf-Trace-Pulse</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: Inter, -apple-system, sans-serif;
+    background: #0f1419; color: #e6edf3; font-size: 13px;
+    padding: 16px; min-width: 340px; position: relative;
+    overflow-x: hidden;
+  }
+  .header { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .header-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: #1a1f2e; padding: 2px;
+    object-fit: contain; display: block;
+  }
+  h1 { font-size: 16px; }
+  .tagline {
+    font-size: 11px; color: #8b95a5; line-height: 1.4;
+    margin-bottom: 16px;
+  }
+  .status {
+    display: inline-block; padding: 3px 10px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; margin-bottom: 12px;
+  }
+  .status-idle { background: #2a3142; color: #8b95a5; }
+  .status-recording { background: #7f1d1d; color: #fca5a5; }
+  .status-reloading { background: #78350f; color: #fcd34d; }
+  .btn {
+    width: 100%; padding: 10px; border: none; border-radius: 4px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    margin-bottom: 8px; font-family: inherit;
+  }
+  .btn-record { background: #4f8ef7; color: #fff; }
+  .btn-record:hover { background: #3b7be0; }
+  .btn-stop { background: #ef4444; color: #fff; }
+  .btn-stop:hover { background: #dc2626; }
+  .btn-secondary { background: #1a1f2e; color: #e6edf3; border: 1px solid #2a3142; }
+  .btn-secondary:hover { background: #2a3142; }
+  .btn-secondary:disabled { opacity: 0.6; cursor: not-allowed; }
+  .live-stats {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    margin: 12px 0;
+  }
+  .stat-card {
+    background: #1a1f2e; border-radius: 6px; padding: 10px; text-align: center;
+  }
+  .stat-value {
+    font-size: 20px; font-weight: 700; color: #4f8ef7;
+    font-family: ui-monospace, monospace;
+  }
+  .stat-label {
+    font-size: 10px; color: #8b95a5;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  input[type="text"] {
+    width: 100%; padding: 8px 10px; background: #1a1f2e;
+    border: 1px solid #2a3142; border-radius: 4px;
+    color: #e6edf3; font-family: inherit; font-size: 13px;
+    margin-bottom: 12px;
+  }
+  input[type="text"]:focus { outline: none; border-color: #4f8ef7; }
+  .log {
+    background: #0a0e14; border-radius: 4px; padding: 8px;
+    font-family: ui-monospace, monospace; font-size: 11px;
+    max-height: 120px; overflow-y: auto; margin-top: 12px;
+  }
+  .log-entry { padding: 2px 0; border-bottom: 1px solid #1a1f2e; }
+  .log-entry:last-child { border-bottom: none; }
+  .hidden { display: none !important; }
+  .section-title {
+    font-size: 11px; color: #8b95a5; text-transform: uppercase;
+    letter-spacing: 0.5px; margin: 16px 0 8px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .section-title .count {
+    background: #1a1f2e; color: #4f8ef7;
+    padding: 1px 8px; border-radius: 10px; font-size: 10px;
+  }
+
+  /* ── Network list ─────────────────────────────── */
+  .network-list {
+    background: #0a0e14; border-radius: 4px;
+    max-height: 220px; overflow-y: auto;
+    font-family: ui-monospace, monospace; font-size: 11px;
+  }
+  .network-list .empty {
+    padding: 12px; color: #6b7280; text-align: center; font-family: inherit;
+    font-size: 11px;
+  }
+  .net-row {
+    display: grid;
+    grid-template-columns: 44px 40px 1fr 52px;
+    gap: 6px; padding: 5px 8px; cursor: pointer;
+    border-bottom: 1px solid #1a1f2e; align-items: center;
+  }
+  .net-row:hover { background: #1a1f2e; }
+  .net-row:last-child { border-bottom: none; }
+  .net-method { color: #8b95a5; font-weight: 600; font-size: 10px; }
+  .net-method.post { color: #f59e0b; }
+  .net-method.put, .net-method.patch { color: #ec4899; }
+  .net-method.delete { color: #ef4444; }
+  .net-status { font-weight: 600; text-align: right; font-size: 10px; }
+  .net-status.ok { color: #22c55e; }
+  .net-status.redirect { color: #f59e0b; }
+  .net-status.err { color: #ef4444; }
+  .net-status.pending { color: #6b7280; }
+  .net-url {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: #c9d1d9;
+  }
+  .net-url .host { color: #6b7280; }
+  .net-dur { text-align: right; color: #8b95a5; font-size: 10px; }
+  .net-dur.slow { color: #ef4444; font-weight: 600; }
+
+  /* ── Request detail overlay ───────────────────── */
+  .req-detail {
+    position: fixed; inset: 0; z-index: 500;
+    background: #0f1419;
+    display: flex; flex-direction: column;
+    padding: 12px;
+    overflow: hidden;
+  }
+  .req-detail.hidden { display: none; }
+  .req-detail-header {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px;
+  }
+  .req-back {
+    background: #1a1f2e; color: #e6edf3; border: 1px solid #2a3142;
+    width: 28px; height: 28px; border-radius: 4px; cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 0;
+  }
+  .req-back:hover { background: #2a3142; }
+  .req-detail-title {
+    font-weight: 600; font-size: 13px;
+    flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .req-detail-status {
+    padding: 2px 8px; border-radius: 4px; font-size: 11px;
+    font-weight: 600;
+  }
+  .req-detail-status.ok { background: #14532d; color: #86efac; }
+  .req-detail-status.err { background: #7f1d1d; color: #fca5a5; }
+  .req-detail-status.pending { background: #1e293b; color: #94a3b8; }
+  .req-detail-url {
+    font-family: ui-monospace, monospace; font-size: 11px;
+    color: #8b95a5; word-break: break-all;
+    padding: 8px 10px; background: #0a0e14; border-radius: 4px;
+    margin-bottom: 10px; line-height: 1.4;
+  }
+  .tabs {
+    display: flex; gap: 2px; border-bottom: 1px solid #2a3142;
+    margin-bottom: 0; flex-shrink: 0;
+  }
+  .tab {
+    background: transparent; color: #8b95a5; border: none;
+    padding: 8px 12px; font-size: 12px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { color: #e6edf3; }
+  .tab.active { color: #4f8ef7; border-bottom-color: #4f8ef7; }
+  .tab-content {
+    flex: 1; overflow-y: auto; padding: 10px 0;
+    font-family: ui-monospace, monospace; font-size: 11px;
+    line-height: 1.5;
+  }
+  .tab-content .section-title {
+    font-family: inherit; font-size: 10px;
+    margin: 12px 0 6px; padding-bottom: 4px;
+    border-bottom: 1px solid #1a1f2e;
+  }
+  .tab-content .section-title:first-child { margin-top: 0; }
+  .kv-table { width: 100%; border-collapse: collapse; }
+  .kv-table td {
+    padding: 4px 8px; vertical-align: top;
+    border-bottom: 1px solid #1a1f2e;
+    word-break: break-word;
+  }
+  .kv-table td:first-child {
+    color: #8b95a5; width: 40%; font-weight: 500;
+  }
+  .kv-table td:last-child { color: #e6edf3; }
+  .empty-msg {
+    color: #6b7280; padding: 20px 12px; text-align: center;
+    font-family: inherit; font-size: 12px; font-style: italic;
+  }
+  .payload-toolbar {
+    display: flex; gap: 4px; margin: 8px 0;
+  }
+  .payload-toolbar button {
+    background: #1a1f2e; color: #8b95a5; border: 1px solid #2a3142;
+    padding: 3px 10px; border-radius: 4px; font-size: 11px;
+    cursor: pointer; font-family: inherit;
+  }
+  .payload-toolbar button.active {
+    background: #4f8ef7; color: #fff; border-color: #4f8ef7;
+  }
+  pre.code-block {
+    background: #0a0e14; padding: 10px; border-radius: 4px;
+    white-space: pre-wrap; word-break: break-word;
+    color: #c9d1d9; font-size: 11px; line-height: 1.5;
+    max-height: 100%; overflow: auto;
+  }
+  .timing-bar {
+    display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+    margin: 8px 0; background: #1a1f2e;
+  }
+  .timing-bar span { display: block; height: 100%; }
+
+  /* ── Modal ─────────────────────────────────── */
+  .modal {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .modal.hidden { display: none; }
+  .modal-backdrop {
+    position: absolute; inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+  }
+  .modal-dialog {
+    position: relative; background: #1a1f2e;
+    border: 1px solid #2a3142; border-radius: 8px;
+    padding: 20px; width: 100%; max-width: 320px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  }
+  .modal-dialog h3 { font-size: 14px; margin-bottom: 8px; color: #e6edf3; }
+  .modal-dialog p {
+    font-size: 12px; color: #8b95a5; margin-bottom: 12px; line-height: 1.5;
+  }
+  .modal-dialog code {
+    color: #4f8ef7; font-family: ui-monospace, monospace;
+    background: #0a0e14; padding: 1px 5px; border-radius: 3px;
+  }
+  .modal-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .modal-actions .btn { margin-bottom: 0; flex: 1; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <img class="header-icon" src="../icons/icon48.png" alt="Perf-Trace-Pulse" />
+    <h1>Perf-Trace-Pulse</h1>
+  </div>
+  <div class="tagline">
+    An open-source-inspired browser performance recorder that captures web performance metrics, analyzes traces, and generates downloadable reports.
+  </div>
+
+  <div id="statusBadge" class="status status-idle">Idle</div>
+
+  <input type="text" id="recordingName" placeholder="Recording name (optional)" />
+
+  <button id="recordBtn" class="btn btn-record">Start Recording</button>
+  <button id="downloadZipBtn" class="btn btn-secondary hidden">📦 Download Report (.zip)</button>
+
+  <div id="liveStats" class="live-stats hidden">
+    <div class="stat-card">
+      <div class="stat-value" id="statDuration">00:00</div>
+      <div class="stat-label">Duration</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statActions">0</div>
+      <div class="stat-label">Actions</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statRequests">0</div>
+      <div class="stat-label">Requests</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statErrors">0</div>
+      <div class="stat-label">Errors</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statShots">0</div>
+      <div class="stat-label">Screenshots</div>
+    </div>
+  </div>
+
+  <div class="section-title">
+    <span>Recording Log</span>
+  </div>
+  <div id="output" class="log">
+    <div class="log-entry">Ready to record.</div>
+  </div>
+
+  <div class="section-title">
+    <span>Network Requests</span>
+    <span class="count" id="netCount">0</span>
+  </div>
+  <div id="networkList" class="network-list">
+    <div class="empty">No requests captured yet. Start a recording to inspect network traffic.</div>
+  </div>
+
+  <!-- ── Request detail overlay ─────────────────── -->
+  <div id="reqDetail" class="req-detail hidden">
+    <div class="req-detail-header">
+      <button id="reqDetailBack" class="req-back" title="Back">←</button>
+      <div class="req-detail-title" id="reqDetailTitle">Request</div>
+      <div id="reqDetailStatus" class="req-detail-status pending">pending</div>
+    </div>
+    <div class="req-detail-url" id="reqDetailUrl"></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="headers">Headers</button>
+      <button class="tab" data-tab="payload">Payload</button>
+      <button class="tab" data-tab="response">Response</button>
+      <button class="tab" data-tab="timing">Timing</button>
+    </div>
+    <div class="tab-content" id="reqTabContent"></div>
+  </div>
+
+  <!-- Name prompt modal -->
+  <div id="nameModal" class="modal hidden">
+    <div class="modal-backdrop" id="nameModalBackdrop"></div>
+    <div class="modal-dialog">
+      <h3>Name your report</h3>
+      <p>You didn't give a name at the start. Enter one now — the ZIP will be saved as <code>{name}.zip</code>.</p>
+      <input type="text" id="nameModalInput" placeholder="perf-report" maxlength="60" />
+      <div class="modal-actions">
+        <button id="nameModalCancel" class="btn btn-secondary" type="button">Cancel</button>
+        <button id="nameModalOk" class="btn btn-record" type="button">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="jszip.min.js"></script>
+  <script src="health.js"></script>
+  <script src="redaction.js"></script>
+  <script src="zipBuilder.js"></script>
+  <script src="reportTheme.js"></script>      <!-- NEW: theme + charts -->  
+  <script src="panel.js"></script>
+</body>
+</html>
