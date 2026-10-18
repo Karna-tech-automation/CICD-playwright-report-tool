@@ -1,6 +1,6 @@
 /**
  * Perf-Trace-Pulse — reportTheme.js
- * v4.5.1 — fixed CSS assignment terminator (buildHero scope bug)
+ * v4.6.0 — no collapse/expand; standard sections
  */
 (function (root) {
   'use strict';
@@ -420,18 +420,7 @@
     '.shot .shot-tag{position:absolute;top:6px;left:6px;background:rgba(99,91,255,.92);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;text-transform:uppercase}' +
     '@media (max-width:1100px){.stats{grid-template-columns:repeat(3,1fr)}.vitals{grid-template-columns:repeat(3,1fr)}.vital.open{grid-column:span 3}.col-wf{display:none}.timing-name{flex:0 0 200px}.timing-ttfb{display:none}}' +
     '@media (max-width:720px){.rpt-header{margin:-40px auto 24px;padding:18px 20px 18px 22px;flex-direction:column;align-items:flex-start;gap:16px}.rpt-title{font-size:16px;white-space:normal}.rpt-main{width:100%}.rpt-health{padding-left:0;border-left:none;padding-top:14px;border-top:1px solid var(--border);width:100%}.rpt-ring,.rpt-ring svg{width:64px;height:64px}.rpt-ring-num{font-size:20px}}' +
-    '@media (max-width:640px){body{padding:0 12px 32px}.hero{margin:0 -12px}.stats,.vitals{grid-template-columns:repeat(2,1fr)}.vital.open{grid-column:span 2}.col-init,.col-wf{display:none}.kv{grid-template-columns:1fr}.kv .k{font-weight:700;padding-top:8px}}' +
-    '.collapsible>.collapse-head{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px}' +
-    '.collapsible>.collapse-head::after{content:"▼";margin-left:auto;font-size:9px;color:var(--text-muted);transition:transform .18s ease;flex-shrink:0}' +
-    '.collapsible.collapsed>.collapse-head::after{transform:rotate(-90deg)}' +
-    '.collapsible>.collapse-head:hover::after{color:var(--brand)}' +
-    '.collapsible.collapsed>.collapse-body{display:none}' +
-    '.collapse-head h2{margin-bottom:0 !important}' +
-    '.collapse-head .section-title{margin-bottom:0}' +
-    '.collapsible>.collapse-body{margin-top:12px}' +
-    '.tabs-collapse{margin-left:auto;background:transparent;border:none;padding:8px 12px;color:var(--text-muted);cursor:pointer;font-size:12px;border-radius:8px;font-family:inherit;transition:background .15s,color .15s}' +
-    '.tabs-collapse:hover{background:#f1f5f9;color:var(--brand)}' +
-    '.tab-panel.collapsed{display:none}';
+    '@media (max-width:640px){body{padding:0 12px 32px}.hero{margin:0 -12px}.stats,.vitals{grid-template-columns:repeat(2,1fr)}.vital.open{grid-column:span 2}.col-init,.col-wf{display:none}.kv{grid-template-columns:1fr}.kv .k{font-weight:700;padding-top:8px}}';
 
   /* ======================= HTML section builders ======================= */
 
@@ -544,17 +533,14 @@
                   ssl:'infra / networking team', send:'client / frontend team',
                   wait:'backend team', receive:'backend or CDN team' }[domKey] || 'unknown';
     var fmtD = function (ms) { return (ms / 1000).toFixed(2) + ' s'; };
-    var h = '<div class="exec collapsible">' +
-      '<div class="collapse-head"><h2>⚠ Executive Summary</h2></div>' +
-      '<div class="collapse-body"><p>';
+    var h = '<div class="exec"><h2>⚠ Executive Summary</h2><p>';
     h += 'The slowest 3 requests consumed <strong>' + fmtD(totalWait) + '</strong> — <strong>' +
          fmtD(gap) + ' above</strong> the B2B enterprise target of 1.00 s. ';
     if (worst) h += 'The single largest cost is <span style="font-family:var(--mono);font-size:12px">' +
                      escapeHtml(shortPath(worst.url || '')) + '</span> at <strong>' +
                      formatDuration(safeDurationMs(worst)) + '</strong>. ';
     h += 'Across all requests, <strong>' + domPct + '%</strong> of time is spent in <strong>' +
-         stageLabel + '</strong>, meaning the <strong>' + owner + '</strong> owns this cost.</p>';
-    h += '</div></div>';
+         stageLabel + '</strong>, meaning the <strong>' + owner + '</strong> owns this cost.</p></div>';
     return h;
   }
 
@@ -566,16 +552,13 @@
     var failed = net.filter(function (r) { return r.failed || (r.status && r.status >= 400); }).length;
     var score = 100 - Math.round((slow / total) * 60) - Math.round((failed / total) * 40);
     score = Math.max(5, Math.min(100, score));
-    return '<div class="perf-overview collapsible">' +
-      '<div class="collapse-head"><h2>Performance Overview</h2></div>' +
-      '<div class="collapse-body">' +
-        '<div class="perf-bar-wrap"><div class="perf-bar" style="width:' + score + '%"></div>' +
-        '<div class="perf-pct">' + score + '%</div></div>' +
-        '<div class="perf-note"><strong>Weighted score</strong> across all requests — combines response time, ' +
-        'failure rate, and network efficiency. Current score reflects <strong>' + failed + ' failed request' +
-        (failed !== 1 ? 's' : '') + '</strong> and <strong>' + slow + ' slow call' +
-        (slow !== 1 ? 's' : '') + ' over 1 s</strong>.</div>' +
-      '</div></div>';
+    return '<div class="perf-overview"><h2>Performance Overview</h2>' +
+      '<div class="perf-bar-wrap"><div class="perf-bar" style="width:' + score + '%"></div>' +
+      '<div class="perf-pct">' + score + '%</div></div>' +
+      '<div class="perf-note"><strong>Weighted score</strong> across all requests — combines response time, ' +
+      'failure rate, and network efficiency. Current score reflects <strong>' + failed + ' failed request' +
+      (failed !== 1 ? 's' : '') + '</strong> and <strong>' + slow + ' slow call' +
+      (slow !== 1 ? 's' : '') + ' over 1 s</strong>.</div></div>';
   }
 
   function buildStatsStrip(report) {
@@ -613,20 +596,19 @@
   }
 
   function buildTimingLinesHTML() {
-    return '<div class="panel collapsible">' +
-      '<div class="collapse-head section-title">Where the time goes — for the slowest 8 requests</div>' +
-      '<div class="collapse-body">' +
-        '<div class="timing-legend">' +
-          '<div class="item"><span class="dot" style="background:#94a3b8"></span><strong>DNS</strong>Lookup</div>' +
-          '<div class="item"><span class="dot" style="background:#60a5fa"></span><strong>TCP</strong>Connect</div>' +
-          '<div class="item"><span class="dot" style="background:#a78bfa"></span><strong>TLS</strong>Handshake</div>' +
-          '<div class="item"><span class="dot" style="background:#fcd34d"></span><strong>Send</strong>Request</div>' +
-          '<div class="item"><span class="dot" style="background:#fb923c"></span><strong>Server</strong>TTFB</div>' +
-          '<div class="item"><span class="dot" style="background:#22c55e"></span><strong>Download</strong>Response</div>' +
-          '<div class="item" style="margin-left:auto;color:var(--text-muted);font-size:11px">Hover any segment for exact timing</div>' +
-        '</div>' +
-        '<div id="timingLines"></div>' +
-      '</div></div>';
+    return '<div class="panel">' +
+      '<div class="section-title">Where the time goes — for the slowest 8 requests</div>' +
+      '<div class="timing-legend">' +
+        '<div class="item"><span class="dot" style="background:#94a3b8"></span><strong>DNS</strong>Lookup</div>' +
+        '<div class="item"><span class="dot" style="background:#60a5fa"></span><strong>TCP</strong>Connect</div>' +
+        '<div class="item"><span class="dot" style="background:#a78bfa"></span><strong>TLS</strong>Handshake</div>' +
+        '<div class="item"><span class="dot" style="background:#fcd34d"></span><strong>Send</strong>Request</div>' +
+        '<div class="item"><span class="dot" style="background:#fb923c"></span><strong>Server</strong>TTFB</div>' +
+        '<div class="item"><span class="dot" style="background:#22c55e"></span><strong>Download</strong>Response</div>' +
+        '<div class="item" style="margin-left:auto;color:var(--text-muted);font-size:11px">Hover any segment for exact timing</div>' +
+      '</div>' +
+      '<div id="timingLines"></div>' +
+    '</div>';
   }
 
   function buildWebVitalsHTML(report) {
@@ -647,9 +629,7 @@
       { name: 'INP',  value: getVital('INP'),  unit: 'ms', target: 200,  context: 'Interaction to Next Paint' },
       { name: 'TTFB', value: getVital('TTFB'), unit: 'ms', target: 800,  context: 'Time to First Byte' }
     ];
-    var h = '<div class="collapsible">' +
-      '<div class="collapse-head section-title">Web Vitals — click any card for details</div>' +
-      '<div class="collapse-body"><div class="vitals" id="vitals">';
+    var h = '<div class="section-title">Web Vitals — click any card for details</div><div class="vitals" id="vitals">';
     defs.forEach(function (v) {
       var isNA = (v.value == null || isNaN(v.value));
       var cls = 'good';
@@ -669,15 +649,13 @@
           '<div class="vlrow"><span class="k">Verdict</span><span class="v" style="color:' + vc + '">' + verdict + '</span></div>' +
         '</div></div>';
     });
-    h += '</div></div></div>';
+    h += '</div>';
     return h;
   }
 
   function buildRiskGridHTML(health) {
     if (!health || !Array.isArray(health.factors) || !health.factors.length) return '';
-    var h = '<div class="collapsible" style="margin-top:20px">' +
-      '<div class="collapse-head section-title">Risk Factors — click a card to drill down</div>' +
-      '<div class="collapse-body"><div class="risk-grid">';
+    var h = '<div class="section-title" style="margin-top:20px">Risk Factors — click a card to drill down</div><div class="risk-grid">';
     health.factors.forEach(function (f) {
       var cls = f.verdict === 'good' ? 'success' : f.verdict === 'warn' ? 'warn' : 'danger';
       var hasData = Array.isArray(f.data) && f.data.length > 0;
@@ -690,8 +668,7 @@
     });
     h += '</div>' +
       '<div class="risk-drill" id="riskDrill"><h3><span id="riskDrillTitle">—</span>' +
-      '<button class="close" id="riskDrillClose">Close</button></h3><div id="riskDrillBody"></div></div>' +
-      '</div></div>';
+      '<button class="close" id="riskDrillClose">Close</button></h3><div id="riskDrillBody"></div></div>';
     return h;
   }
 
@@ -703,8 +680,7 @@
       '<button class="tab active" data-tab="network">Network <span class="cnt" id="tabNetCount">' + netCount + '</span></button>' +
       '<button class="tab" data-tab="attachments">Attachments <span class="cnt" id="tabAttCount">' + attCount + '</span></button>' +
       '<button class="tab" data-tab="console">Console <span class="cnt" id="tabConCount">' + conCount + '</span></button>' +
-      '<button class="tab" data-tab="raw">Raw JSON</button>' +
-      '<button class="tabs-collapse" type="button" title="Collapse panel">▼</button></div>';
+      '<button class="tab" data-tab="raw">Raw JSON</button></div>';
   }
 
   function buildTabPanelHTML() {
@@ -1196,20 +1172,6 @@
         if (!was) v.classList.add('open');
       });
     });
-    Array.prototype.forEach.call(document.querySelectorAll('.collapsible > .collapse-head'), function (head) {
-      head.addEventListener('click', function () {
-        head.parentElement.classList.toggle('collapsed');
-      });
-    });
-    var tabsCollapse = document.querySelector('.tabs-collapse');
-    var tabPanel     = document.querySelector('.tab-panel');
-    if (tabsCollapse && tabPanel) {
-      tabsCollapse.addEventListener('click', function (e) {
-        e.stopPropagation();
-        tabPanel.classList.toggle('collapsed');
-        tabsCollapse.textContent = tabPanel.classList.contains('collapsed') ? '▶' : '▼';
-      });
-    }
 
     function safe(fn, name) { try { fn(); } catch (e) { console.error('[ReportTheme runtime:' + name + ']', e); } }
     safe(renderTimingLines, 'timingLines');
@@ -1269,7 +1231,7 @@
 
   function debug() {
     var info = {
-      version: '4.5.1',
+      version: '4.6.0',
       hasBuild: typeof buildSelfContainedHTML === 'function',
       host: typeof window !== 'undefined' ? 'window' : typeof self !== 'undefined' ? 'self' : 'unknown'
     };
@@ -1281,7 +1243,7 @@
   }
 
   var API = {
-    version: '4.5.1',
+    version: '4.6.0',
     buildSelfContainedHTML: buildSelfContainedHTML,
     debug: debug,
     escapeHtml: escapeHtml,
