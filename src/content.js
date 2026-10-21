@@ -1,7 +1,7 @@
 /**
- * Perf-Trace-Pulse — Content Script v1.8
- * - Coalesces redundant events (click+focus, keydown+input, input+change)
- * - Context-alive guards for extension reloads
+ * Perf-Lens — Content Script v1.13.1
+ * - Fixed Resource Timing to use PerformanceObserver
+ * - Filtered out internal extension marks from Custom Marks
  */
 
 (() => {
@@ -12,16 +12,22 @@
   let isRecording = false;
   let actionBuffer = [];
   let vitalsBuffer = [];
+  let fpsBuffer = [];
+  let customMarksBuffer = [];
+  let resourcesBuffer = [];
+
   let mutationDebounce = null;
   let lastMutationAlert = 0;
 
-  // Coalescing state
-  const recentClicks = new WeakMap();   // target -> Date.now()
-  const recentInputs = new WeakMap();   // target -> Date.now()
+  const recentClicks = new WeakMap();
+  const recentInputs = new WeakMap();
   let inputDebounceTimer = null;
-  let pendingInput = null;              // { target, value }
+  let pendingInput = null;
 
-  // ── Context-alive guards ──────────────────────────────────────────
+  let fpsFrameCount = 0;
+  let fpsLastSample = performance.now();
+  let fpsRafId = null;
+
   function isContextAlive() {
     try { return !!(chrome && chrome.runtime && chrome.runtime.id); } catch (_) { return false; }
   }
@@ -33,6 +39,41 @@
   function uuid() {
     return 'a-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now();
   }
+
+  // ── FPS sampling ─────────────────────────────────────────────────
+  function fpsTick() {
+    if (!isRecording) { fpsRafId = null; return; }
+    fpsFrameCount++;
+    const now = performance.now();
+    const elapsed = now - fpsLastSample;
+    if (elapsed >= 1000) {
+      fpsBuffer.push({
+        timestamp: now, epoch: Date.now(),
+        fps: Math.round((fpsFrameCount / elapsed) * 1000), url: location.href
+      });
+      fpsFrameCount = 0;
+      fpsLastSample = now;
+    }
+    fpsRafId = requestAnimationFrame(fpsTick);
+  }
+
+  function startFPS() {
+    if (fpsRafId) return;
+    fpsFrameCount = 0;
+    fpsLastSample = performance.now();
+    fpsRafId = requestAnimationFrame(fpsTick);
+  }
+
+  function stopFPS() {
+    if (fpsRafId) { cancelAnimationFrame(fpsRafId); fpsRafId = null; }
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && fpsRafId) {
+      fpsFrameCount = 0;
+      fpsLastSample = performance.now();
+    }
+  });
 
   // ── Selectors ─────────────────────────────────────────────────────
   function getCssSelector(el) {
@@ -80,7 +121,6 @@
   function describe(el) {
     if (!el || el.nodeType !== 1) return {};
     
-    // <--- MODIFIED: Build a human-readable displayName string
     let tag = el.tagName.toLowerCase();
     let idStr = el.id ? `#${el.id}` : '';
     let classStr = (typeof el.className === 'string' && el.className.trim()) 
@@ -106,7 +146,7 @@
       value: (el.value !== undefined && el.value !== null) ? String(el.value).slice(0, 100) : null,
       selector: getCssSelector(el),
       xpath: getXPath(el),
-      displayName: displayName // <--- NEW: Easy string for the report table
+      displayName: displayName
     };
   }
 
@@ -116,7 +156,6 @@
     const perfNow = performance.now();
     const epoch = Date.now();
 
-    // <--- MODIFIED: Extract the display name once to avoid calling describe() twice
     const targetDescription = describe(el);
 
     const entry = {
@@ -126,7 +165,7 @@
       epoch: epoch,
       url: location.href,
       target: targetDescription,
-      targetName: targetDescription.displayName || 'Unknown' // <--- NEW: Top-level string for easy report rendering
+      targetName: targetDescription.displayName || 'Unknown'
     };
     if (extra) {
       for (const k in extra) {
@@ -134,7 +173,6 @@
       }
     }
 
-    // Double-rAF paint latency
     const markId = 'action-' + entry.id;
     try { performance.mark(markId + '-start'); } catch (_) {}
     requestAnimationFrame(function () {
@@ -153,19 +191,26 @@
   }
 
   function flush() {
-    if (!actionBuffer.length && !vitalsBuffer.length) return;
+    if (!actionBuffer.length && !vitalsBuffer.length && !fpsBuffer.length && !customMarksBuffer.length && !resourcesBuffer.length) return;
     if (!isContextAlive()) {
-      actionBuffer = [];
-      vitalsBuffer = [];
+      actionBuffer = []; vitalsBuffer = []; fpsBuffer = []; customMarksBuffer = []; resourcesBuffer = [];
       return;
     }
-    const payload = { actions: actionBuffer, vitals: vitalsBuffer };
+    const payload = { 
+      actions: actionBuffer, 
+      vitals: vitalsBuffer, 
+      fps: fpsBuffer,
+      customMarks: customMarksBuffer,
+      resources: resourcesBuffer
+    };
     safeSendMessage({ target: 'content', type: 'CONTENT_BATCH', payload: payload });
     actionBuffer = [];
     vitalsBuffer = [];
+    fpsBuffer = [];
+    customMarksBuffer = [];
+    resourcesBuffer = [];
   }
 
-  // Flush pending debounced input
   function flushPendingInput() {
     if (!pendingInput) return;
     const el = pendingInput.target;
@@ -182,7 +227,64 @@
     flushPendingInput();
     flush();
   });
+    // ── Observers for Custom Marks & Resource Timing ────────────────
+   // ── Observers for Custom Marks & Resource Timing ────────────────
+  try {
+    new PerformanceObserver((list) => {
+      const entries = list.getEntries();
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        if (e.entryType === 'mark') {
+          customMarksBuffer.push({ name: e.name, startTime: e.startTime, type: 'mark' });
+        } else if (e.entryType === 'measure') {
+          customMarksBuffer.push({ name: e.name, startTime: e.startTime, duration: e.duration, type: 'measure' });
+        }
+      }
+    }).observe({ entryTypes: ['mark', 'measure'] });
+  } catch (_) {}
 
+  function captureResources() {
+    try {
+      const entries = performance.getEntriesByType('resource');
+      const existingNames = new Set(resourcesBuffer.map(r => r.name));
+      
+      entries.forEach(e => {
+        const isCSS = e.initiatorType === 'link' || e.name.includes('.css');
+        const isJS = e.initiatorType === 'script' || e.name.includes('.js');
+        
+        if ((isCSS || isJS) && !existingNames.has(e.name)) {
+          resourcesBuffer.push({
+            name: e.name,
+            type: isCSS ? 'link' : 'script',
+            startTime: e.startTime || 0,
+            duration: e.duration || 0,
+            transferSize: e.transferSize || 0
+          });
+        }
+      });
+    } catch (_) {}
+  }
+
+  try {
+    new PerformanceObserver((list) => {
+      const entries = list.getEntries();
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        const isCSS = e.initiatorType === 'link' || e.name.includes('.css');
+        const isJS = e.initiatorType === 'script' || e.name.includes('.js');
+        
+        if (isCSS || isJS) {
+          resourcesBuffer.push({
+            name: e.name,
+            type: isCSS ? 'link' : 'script',
+            startTime: e.startTime || 0,
+            duration: e.duration || 0,
+            transferSize: e.transferSize || 0
+          });
+        }
+      }
+    }).observe({ type: 'resource', buffered: true });
+  } catch (_) {}
   // ── User action listeners ─────────────────────────────────────────
   const EVENTS = [
     'click', 'dblclick', 'contextmenu',
@@ -207,7 +309,6 @@
     document.addEventListener(evt, function (e) {
       if (!isRecording) return;
 
-      // ── keydown: only meaningful keys (single-char is covered by 'input') ──
       if (evt === 'keydown') {
         if (SKIP_KEYDOWN_KEYS.indexOf(e.key) !== -1) return;
         if (e.ctrlKey || e.metaKey) return;
@@ -216,7 +317,6 @@
         return;
       }
 
-      // ── input: debounce to one action per 500ms with final value ──
       if (evt === 'input') {
         const el = e.target;
         pendingInput = { target: el, value: el.value };
@@ -225,7 +325,6 @@
         return;
       }
 
-      // ── change: skip if input was already recorded on same element recently ──
       if (evt === 'change') {
         const el = e.target;
         const lastInput = recentInputs.get(el);
@@ -234,17 +333,15 @@
         return;
       }
 
-      // ── focusin: only on input-like elements; skip if click preceded on same target ──
       if (evt === 'focusin') {
         const el = e.target;
         if (!isInputElement(el)) return;
         const lastClick = recentClicks.get(el);
-        if (lastClick && Date.now() - lastClick < 300) return;  // click already implies focus
+        if (lastClick && Date.now() - lastClick < 300) return;
         recordAction('FOCUSIN', e);
         return;
       }
 
-      // ── focusout: flush pending input first ──
       if (evt === 'focusout') {
         const el = e.target;
         if (!isInputElement(el)) return;
@@ -256,21 +353,18 @@
         return;
       }
 
-      // ── mousedown / mouseup: only on SELECT (native dropdown opening) ──
       if (evt === 'mousedown' || evt === 'mouseup') {
         if (e.target.tagName !== 'SELECT') return;
         recordAction(evt.toUpperCase(), e);
         return;
       }
 
-      // ── click: remember target timestamp (for focusin merge) and record ──
       if (evt === 'click') {
         recentClicks.set(e.target, Date.now());
         recordAction('CLICK', e);
         return;
       }
 
-      // ── everything else: record as-is ──
       recordAction(evt.toUpperCase(), e);
     }, { capture: true, passive: true });
   });
@@ -333,6 +427,7 @@
     new PerformanceObserver(function (list) {
       const entries = list.getEntries();
       for (let i = 0; i < entries.length; i++) {
+        if (entries[i].name === 'first-paint') emitVital('FP', entries[i].startTime);
         if (entries[i].name === 'first-contentful-paint') emitVital('FCP', entries[i].startTime);
       }
     }).observe({ type: 'paint', buffered: true });
@@ -353,8 +448,18 @@
     new PerformanceObserver(function (list) {
       const entries = list.getEntries();
       for (let i = 0; i < entries.length; i++) {
-        emitVital('LONGTASK', entries[i].duration, {
-          startTime: entries[i].startTime, name: entries[i].name
+        const e = entries[i];
+        const attrs = e.attribution || [];
+        const a0 = attrs[0] || {};
+        emitVital('LONGTASK', e.duration, {
+          startTime: e.startTime,
+          name: e.name,
+          attribution: {
+            containerType: a0.containerType || '',
+            containerName: a0.containerName || '',
+            containerSrc: a0.containerSrc || '',
+            containerId: a0.containerId || ''
+          }
         });
       }
     }).observe({ type: 'longtask', buffered: true });
@@ -369,11 +474,26 @@
     }).observe({ type: 'event', buffered: true, durationThreshold: 16 });
   } catch (_) {}
 
+  try {
+    new PerformanceObserver(function (list) {
+      const entries = list.getEntries();
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        emitVital('ELEMENT_TIMING', e.duration, {
+          identifier: e.identifier || 'unnamed',
+          renderTime: e.renderTime, loadTime: e.loadTime,
+          url: e.url ? e.url.slice(0, 150) : '', element: e.element ? e.element.tagName : 'Unknown'
+        });
+      }
+    }).observe({ type: 'element', buffered: true });
+  } catch (_) {}
+
   window.addEventListener('load', function () {
     setTimeout(function () {
       const nav = performance.getEntriesByType('navigation')[0];
       if (!nav) return;
       emitVital('TTFB', nav.responseStart);
+      emitVital('DOM_INTERACTIVE', nav.domInteractive);
       emitVital('DOM_CONTENT_LOADED', nav.domContentLoadedEventEnd);
       emitVital('LOAD_COMPLETE', nav.loadEventEnd);
     }, 0);
@@ -433,7 +553,7 @@
       const info = describeMutation(mutations);
       if (!info) return;
       const now = Date.now();
-      if (now - lastMutationAlert < 500) return;
+      if (now - lastMutationAlert < 5000) return;
       lastMutationAlert = now;
       clearTimeout(mutationDebounce);
       mutationDebounce = setTimeout(function () {
@@ -451,9 +571,13 @@
     try {
       chrome.runtime.onMessage.addListener(function (msg) {
         if (!msg || msg.target !== 'content') return;
-        if (msg.type === 'RECORDING_STARTED') isRecording = true;
-        else if (msg.type === 'RECORDING_STOPPED') {
+        if (msg.type === 'RECORDING_STARTED') {
+          isRecording = true;
+          startFPS();
+          captureResources();
+        } else if (msg.type === 'RECORDING_STOPPED') {
           clearTimeout(inputDebounceTimer);
+          stopFPS();
           flushPendingInput();
           flush();
           isRecording = false;
@@ -465,16 +589,19 @@
   if (isContextAlive()) {
     try {
       chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' }, function (res) {
-        if (isContextAlive() && res && res.recording) isRecording = true;
+        if (isContextAlive() && res && res.recording) {
+          isRecording = true;
+          startFPS();
+        }
       });
     } catch (_) {}
   }
 
   setInterval(function () {
     if (!isContextAlive()) {
-      actionBuffer = [];
-      vitalsBuffer = [];
+      actionBuffer = []; vitalsBuffer = []; fpsBuffer = []; customMarksBuffer = []; resourcesBuffer = [];
       isRecording = false;
+      stopFPS();
     }
   }, 5000);
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Perf-Trace-Pulse</title>
+<title>Perf-Lens</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -213,7 +213,31 @@
     margin: 8px 0; background: #1a1f2e;
   }
   .timing-bar span { display: block; height: 100%; }
-
+ 
+  /* ── History List ─────────────────────────────── */
+  .history-list {
+    display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;
+  }
+  .history-item {
+    background: #1a1f2e; border-radius: 6px; padding: 10px;
+    display: flex; justify-content: space-between; align-items: center;
+    border: 1px solid #2a3142;
+  }
+  .history-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; margin-right: 12px; }
+  .history-name { font-size: 12px; font-weight: 600; color: #e6edf3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .history-date { font-size: 10px; color: #8b95a5; }
+  .history-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  
+  /* NEW BUTTON STYLES */
+  .btn-hist { 
+    border: none; border-radius: 4px; padding: 5px 10px; 
+    font-size: 11px; font-weight: 600; cursor: pointer; 
+    transition: opacity 0.2s; font-family: inherit; color: #fff;
+  }
+  .btn-hist:hover { opacity: 0.85; }
+  .btn-hist.download { background: #22c55e; } /* Green */
+  .btn-hist.delete { background: #ef4444; }   /* Red */
+  
   /* ── Modal ─────────────────────────────────── */
   .modal {
     position: fixed; inset: 0; z-index: 9999;
@@ -245,20 +269,34 @@
 </head>
 <body>
   <div class="header">
-    <img class="header-icon" src="../icons/icon48.png" alt="Perf-Trace-Pulse" />
-    <h1>Perf-Trace-Pulse</h1>
+    <img class="header-icon" src="../icons/icon48.png" alt="Perf-Lens" />
+    <h1>Perf-Lens</h1>
   </div>
   <div class="tagline">
-    An open-source-inspired browser performance recorder that captures web performance metrics, analyzes traces, and generates downloadable reports.
+    An internal enterprise tool for automated UI & API performance auditing.
   </div>
 
   <div id="statusBadge" class="status status-idle">Idle</div>
 
   <input type="text" id="recordingName" placeholder="Recording name (optional)" />
+    <select id="throttleSelect" style="width: 100%; padding: 8px 10px; background: #1a1f2e; border: 1px solid #2a3142; border-radius: 4px; color: #e6edf3; font-family: inherit; font-size: 13px; margin-bottom: 12px; outline: none; cursor: pointer;">
+    <option value="none">Network: No Throttling</option>
+    <option value="fast3g">Network: Fast 3G</option>
+    <option value="slow3g">Network: Slow 3G</option>
+    <option value="cpu4x">CPU: 4x Slowdown</option>
+  </select>
 
   <button id="recordBtn" class="btn btn-record">Start Recording</button>
   <button id="downloadZipBtn" class="btn btn-secondary hidden">📦 Download Report (.zip)</button>
-
+  
+  <div class="section-title" style="margin-top: 20px;">
+    <span>Recording History</span>
+    <span class="count" id="historyCount">0</span>
+  </div>
+  <div id="historyList" class="history-list">
+    <div class="empty" style="padding: 12px; color: #6b7280; text-align: center; font-size: 11px;">No previous recordings found.</div>
+  </div>
+  
   <div id="liveStats" class="live-stats hidden">
     <div class="stat-card">
       <div class="stat-value" id="statDuration">00:00</div>
@@ -296,7 +334,6 @@
   <div id="networkList" class="network-list">
     <div class="empty">No requests captured yet. Start a recording to inspect network traffic.</div>
   </div>
-
   <!-- ── Request detail overlay ─────────────────── -->
   <div id="reqDetail" class="req-detail hidden">
     <div class="req-detail-header">

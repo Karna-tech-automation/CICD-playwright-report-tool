@@ -1,8 +1,8 @@
   {
     "manifest_version": 3,
-    "name": "Perf-Trace-Pulse",
+    "name": "Perf-Lens",
     "version": "1.0.0",
-    "description": "An open-source-inspired browser performance recorder that captures web performance metrics, analyzes traces, and generates downloadable reports.",
+    "description": "An internal enterprise tool for automated UI & API performance auditing.",
     "permissions": [
       "storage",
       "unlimitedStorage",
@@ -30,7 +30,7 @@
       }
     ],
     "action": {
-      "default_title": "Perf-Trace-Pulse",
+      "default_title": "Perf-Lens",
       "default_icon": {
         "16": "icons/icon16.png",
         "48": "icons/icon48.png",

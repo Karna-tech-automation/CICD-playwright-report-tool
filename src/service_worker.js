@@ -1,20 +1,14 @@
 /**
- * Perf-Trace-Pulse — Service Worker v1.9.1
- * - Report history (last 20 sessions, LRU)
- * - Performance budgets (persisted)
- * - Sensitive-data redaction at capture time
- * - v1.9.0: explicit Network.getRequestPostData / Network.getResponseBody
- * - v1.9.1: Network.enable({ maxPostDataSize }) so POST bodies are delivered;
- *           live request broadcasts (REQUEST_ADDED / REQUEST_UPDATED /
- *           REQUESTS_CLEARED) and GET_LIVE_REQUESTS / GET_REQUEST_DETAIL
- *           handlers for the panel's network inspector.
+ * Perf-Lens — Service Worker v1.13.0
+ * - Stores custom marks & resources.
+ * - Calculates baseline comparison against the previous session.
  */
 
 importScripts('redaction.js');
 importScripts('health.js');
 
-if (!self.PerfRedaction) console.error('[PTP] redaction.js failed to load — sensitive data will NOT be redacted');
-if (!self.PerfHealth)    console.error('[PTP] health.js failed to load — history will not store scores');
+if (!self.PerfRedaction) console.error('[Perf-Lens] redaction.js failed to load — sensitive data will NOT be redacted');
+if (!self.PerfHealth)    console.error('[Perf-Lens] health.js failed to load — history will not store scores');
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
@@ -25,6 +19,7 @@ const SCREENSHOT_MIN_GAP_MS = 250;
 const MAX_SCREENSHOTS = 500;
 const MAX_BODY_BYTES = 100_000;
 const MAX_HISTORY = 20;
+const MAX_FPS_SAMPLES = 3600;
 let lastScreenshotAt = 0;
 
 const panelPorts = new Set();
@@ -52,24 +47,15 @@ function uuid(prefix) {
   return prefix + '-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now();
 }
 
-// ── Network request summary (for live panel broadcasts) ───────────
 function summarizeRequest(r) {
   return {
-    id: r.id,
-    url: r.url,
-    method: r.method,
-    status: r.status,
-    statusText: r.statusText,
-    durationMs: r.durationMs,
-    relativeMs: r.relativeMs,
-    mimeType: r.mimeType,
-    encodedDataLength: r.encodedDataLength,
-    failed: r.failed,
-    type: r.type
+    id: r.id, url: r.url, method: r.method, status: r.status,
+    statusText: r.statusText, durationMs: r.durationMs, relativeMs: r.relativeMs,
+    mimeType: r.mimeType, encodedDataLength: r.encodedDataLength,
+    failed: r.failed, type: r.type
   };
 }
 
-// ── Budget storage ────────────────────────────────────────────────
 async function getBudget() {
   const stored = await chrome.storage.local.get('budget');
   const base = (self.PerfHealth && self.PerfHealth.BUDGET_DEFAULTS) || {};
@@ -83,7 +69,6 @@ async function setBudget(partial) {
   return next;
 }
 
-// ── History storage ───────────────────────────────────────────────
 async function saveReportToHistory(report) {
   const health = report.health || null;
   const meta = {
@@ -102,7 +87,9 @@ async function saveReportToHistory(report) {
       totalRequests: (report.summary && report.summary.totalRequests) || 0,
       failedRequests: (report.summary && report.summary.failedRequests) || 0,
       totalErrors: (report.summary && report.summary.totalErrors) || 0,
-      screenshotsCount: (report.summary && report.summary.screenshotsCount) || 0
+      screenshotsCount: (report.summary && report.summary.screenshotsCount) || 0,
+      lcp: (report.summary && report.summary.lcp) || 0,
+      totalTransferBytes: (report.summary && report.summary.totalTransferBytes) || 0
     }
   };
 
@@ -112,6 +99,7 @@ async function saveReportToHistory(report) {
 
   const snapshot = JSON.parse(JSON.stringify(report));
   snapshot.screenshots = [];
+  snapshot.network.forEach(r => r.responseBody = '');
   snapshot.screenshotsStripped = true;
 
   const key = 'report-' + meta.id;
@@ -129,7 +117,7 @@ async function saveReportToHistory(report) {
     }
   }
   if (!indexSaved) {
-    console.warn('[PTP] Could not persist report history snapshot (quota).');
+    console.warn('[Perf-Lens] Could not persist report history snapshot (quota).');
     try { await chrome.storage.local.set({ reportsIndex: nextIndex }); } catch (_) {}
   }
 
@@ -141,7 +129,6 @@ async function saveReportToHistory(report) {
   }
 }
 
-// ── Screenshot ────────────────────────────────────────────────────
 async function captureScreenshot(tabId, label, meta, force) {
   if (!activeRecording || !tabId) return null;
   if (!force && activeRecording.settleUntil && Date.now() < activeRecording.settleUntil) return null;
@@ -203,10 +190,7 @@ function waitForLoad(tabId, timeoutMs) {
   });
 }
 
-// ── Helper: enable Network with body buffering ─────────────────────
 async function enableNetwork(tabId) {
-  // maxPostDataSize is what makes Chrome include request.postData on the
-  // requestWillBeSent event. Without it, POST bodies are silently omitted.
   try {
     await chrome.debugger.sendCommand(
       { tabId },
@@ -218,8 +202,7 @@ async function enableNetwork(tabId) {
   }
 }
 
-// ── Start ────────────────────────────────────────────────────────
-async function startRecording(name, tabId) {
+async function startRecording(name, tabId, throttle) {
   if (activeRecording) throw new Error('Already recording');
 
   activeRecording = {
@@ -229,6 +212,9 @@ async function startRecording(name, tabId) {
     network: { requests: {} }, console: { entries: [] },
     vitals: { events: [] }, actions: { entries: [] },
     memory: { samples: [] }, navigations: [], screenshots: [],
+    fps: { samples: [] },
+    customMarks: { entries: [] },
+    resources: { entries: [] },
     tabs: [{ tabId, openerTabId: null, createdAt: Date.now(), event: 'root' }],
     settleUntil: Date.now() + 600000
   };
@@ -242,7 +228,18 @@ async function startRecording(name, tabId) {
         try { await chrome.debugger.sendCommand({ tabId }, d + '.enable'); } catch (_) {}
       }
       await enableNetwork(tabId);
-
+          // APPLY THROTTLING
+      if (throttle === 'fast3g') {
+        await chrome.debugger.sendCommand({ tabId }, 'Network.emulateNetworkConditions', {
+          offline: false, latency: 150, downloadThroughput: 1.6 * 1024 * 1024 / 8, uploadThroughput: 750 * 1024 / 8
+        });
+      } else if (throttle === 'slow3g') {
+        await chrome.debugger.sendCommand({ tabId }, 'Network.emulateNetworkConditions', {
+          offline: false, latency: 400, downloadThroughput: 400 * 1024 / 8, uploadThroughput: 400 * 1024 / 8
+        });
+      } else if (throttle === 'cpu4x') {
+        await chrome.debugger.sendCommand({ tabId }, 'Emulation.setCPUThrottlingRate', { rate: 4 });
+      }
       try {
         const res = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
           expression: '({ url: location.href, viewport: { width: innerWidth, height: innerHeight } })',
@@ -280,12 +277,17 @@ async function startRecording(name, tabId) {
   return { ok: true };
 }
 
-// ── Stop ─────────────────────────────────────────────────────────
 async function stopRecording() {
   if (!activeRecording) throw new Error('Not recording');
 
   if (memoryInterval) { clearInterval(memoryInterval); memoryInterval = null; }
   const tabId = activeRecording.debuggeeTabId;
+
+    // RESET THROTTLING (Crucial so the user's browser doesn't stay slow)
+  if (tabId) {
+    try { await chrome.debugger.sendCommand({ tabId }, 'Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }); } catch (_) {}
+    try { await chrome.debugger.sendCommand({ tabId }, 'Emulation.setCPUThrottlingRate', { rate: 1 }); } catch (_) {}
+  }
 
   if (tabId) await captureScreenshot(tabId, 'stop', { detail: 'Recording stopped' }, true);
 
@@ -296,7 +298,19 @@ async function stopRecording() {
   if (tabId) { try { await chrome.debugger.detach({ tabId }); } catch (_) {} }
 
   activeRecording.endedAt = Date.now();
-  const report = buildPerformanceReport(activeRecording);
+  
+  // Fetch previous report for baseline comparison
+  let prevReport = null;
+  try {
+    const { reportsIndex } = await chrome.storage.local.get('reportsIndex');
+    if (reportsIndex && reportsIndex.length > 0) {
+      const prevId = reportsIndex[0].id; // Most recent
+      const prevData = await chrome.storage.local.get('report-' + prevId);
+      if (prevData['report-' + prevId]) prevReport = prevData['report-' + prevId];
+    }
+  } catch (_) {}
+
+  const report = await buildPerformanceReport(activeRecording, prevReport);
 
   if (self.PerfHealth) {
     try { report.health = self.PerfHealth.computeHealth(report); } catch (e) { console.warn('Health failed:', e); }
@@ -345,53 +359,44 @@ function startMemorySampling(tabId) {
   }, 2000);
 }
 
-// ── CDP events ────────────────────────────────────────────────────
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
   if (!activeRecording) return;
   const tabId = source.tabId;
 
   switch (method) {
     case 'Network.requestWillBeSent': {
+      const reqCount = Object.keys(activeRecording.network.requests).length;
+      if (reqCount > 3000) {
+        const oldestId = Object.keys(activeRecording.network.requests)[0];
+        delete activeRecording.network.requests[oldestId];
+      }
       const req = {
-        id: params.requestId,
-        url: params.request.url,
-        method: params.request.method,
-        requestHeaders: params.request.headers,
-        postData: params.request.postData,
+        id: params.requestId, url: params.request.url, method: params.request.method,
+        requestHeaders: params.request.headers, postData: params.request.postData,
         hasPostData: params.request.hasPostData === true,
-        startTime: params.timestamp * 1000,
-        epoch: Date.now(),
-        relativeMs: Date.now() - activeRecording.startTime,
-        tabId, type: params.type
+        startTime: params.timestamp * 1000, epoch: Date.now(),
+        relativeMs: Date.now() - activeRecording.startTime, tabId, type: params.type
       };
       if (self.PerfRedaction) self.PerfRedaction.redactRequest(req);
       activeRecording.network.requests[params.requestId] = req;
 
-      // Broadcast to panel
       broadcastToPanel({ type: 'REQUEST_ADDED', request: summarizeRequest(req) });
 
-      // Fallback for body-carrying methods (only when postData wasn't already
-      // delivered via the event). hasPostData alone is unreliable — Chrome
-      // sets it true for some GETs — so we gate strictly on the method.
       const m = (params.request.method || '').toUpperCase();
       const bodyMethod = m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE';
       if (bodyMethod && !req.postData) {
-        chrome.debugger
-          .sendCommand({ tabId }, 'Network.getRequestPostData', { requestId: params.requestId })
+        chrome.debugger.sendCommand({ tabId }, 'Network.getRequestPostData', { requestId: params.requestId })
           .then((res) => {
             const rec = activeRecording && activeRecording.network.requests[params.requestId];
             if (!rec) return;
             if (res && typeof res.postData === 'string') {
-              rec.postData = res.postData.length < MAX_BODY_BYTES
-                ? res.postData
-                : res.postData.slice(0, MAX_BODY_BYTES) + '\n…[truncated]';
+              rec.postData = res.postData.length < MAX_BODY_BYTES ? res.postData : res.postData.slice(0, MAX_BODY_BYTES) + '\n…[truncated]';
               if (self.PerfRedaction) {
                 if (self.PerfRedaction.redactBody) rec.postData = self.PerfRedaction.redactBody(rec.postData);
                 else self.PerfRedaction.redactRequest(rec);
               }
             }
-          })
-          .catch(() => {});
+          }).catch(() => {});
       }
       break;
     }
@@ -407,7 +412,6 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
         req.fromCache = params.response.fromDiskCache || params.response.fromServiceWorker;
         req.protocol = params.response.protocol;
         if (self.PerfRedaction) req.responseHeaders = self.PerfRedaction.redactHeaders(req.responseHeaders);
-
         broadcastToPanel({ type: 'REQUEST_UPDATED', request: summarizeRequest(req) });
       }
       break;
@@ -421,45 +425,32 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
         req.durationMs = Math.round(req.endTime - req.startTime);
 
         const mt = (req.mimeType || '').toLowerCase();
-        const isBinary =
-          mt.indexOf('image/') === 0 ||
-          mt.indexOf('video/') === 0 ||
-          mt.indexOf('audio/') === 0 ||
-          mt.indexOf('font') !== -1 ||
-          mt.indexOf('octet-stream') !== -1 ||
-          mt.indexOf('pdf') !== -1 ||
-          mt.indexOf('zip') !== -1 ||
-          mt.indexOf('gzip') !== -1 ||
-          mt.indexOf('wasm') !== -1 ||
-          mt.indexOf('protobuf') !== -1 ||
-          mt.indexOf('event-stream') !== -1;
+        const isBinary = mt.indexOf('image/') === 0 || mt.indexOf('video/') === 0 || mt.indexOf('audio/') === 0 ||
+          mt.indexOf('font') !== -1 || mt.indexOf('octet-stream') !== -1 || mt.indexOf('pdf') !== -1 ||
+          mt.indexOf('zip') !== -1 || mt.indexOf('gzip') !== -1 || mt.indexOf('wasm') !== -1 ||
+          mt.indexOf('protobuf') !== -1 || mt.indexOf('event-stream') !== -1;
 
-        const sizeOk = (params.encodedDataLength || 0) < MAX_BODY_BYTES;
+                // Only capture the body if it's smaller than 50KB and is text/JSON
+        const sizeOk = (params.encodedDataLength || 0) < 50000;
 
         if (!isBinary && sizeOk) {
           try {
-            const body = await chrome.debugger.sendCommand(
-              { tabId }, 'Network.getResponseBody', { requestId: params.requestId }
-            );
+            const body = await chrome.debugger.sendCommand({ tabId }, 'Network.getResponseBody', { requestId: params.requestId });
             if (body && typeof body.body === 'string') {
               const base64 = !!body.base64Encoded;
               let raw = body.body;
               if (raw.length > MAX_BODY_BYTES) raw = raw.slice(0, MAX_BODY_BYTES) + '\n…[truncated]';
-
               if (base64) {
                 req.responseBody = '[base64]';
                 req.responseBodyBase64 = true;
               } else {
                 req.responseBody = raw;
                 req.responseBodyBase64 = false;
-                if (self.PerfRedaction && self.PerfRedaction.redactBody) {
-                  req.responseBody = self.PerfRedaction.redactBody(req.responseBody);
-                }
+                if (self.PerfRedaction && self.PerfRedaction.redactBody) req.responseBody = self.PerfRedaction.redactBody(req.responseBody);
               }
             }
           } catch (_) {}
         }
-
         broadcastToPanel({ type: 'REQUEST_UPDATED', request: summarizeRequest(req) });
       }
       break;
@@ -540,7 +531,6 @@ chrome.debugger.onDetach.addListener(async (source) => {
   }
 });
 
-// ── Tab lifecycle ─────────────────────────────────────────────────
 chrome.tabs.onCreated.addListener((tab) => {
   if (!activeRecording) return;
   activeRecording.tabs.push({
@@ -592,7 +582,6 @@ chrome.webNavigation.onCommitted.addListener((details) => {
   });
 });
 
-// ── Messages ──────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.target === 'offscreen') return false;
   handleMessage(msg, sender).then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e) }));
@@ -619,9 +608,7 @@ async function handleMessage(msg, sender) {
       if (!msg.id) return { ok: false, error: 'Missing id' };
       const key = 'report-' + msg.id;
       const stored = await chrome.storage.local.get([key, 'lastReport']);
-      if (stored.lastReport && stored.lastReport.reportId === msg.id) {
-        return { ok: true, report: stored.lastReport, full: true };
-      }
+      if (stored.lastReport && stored.lastReport.reportId === msg.id) return { ok: true, report: stored.lastReport, full: true };
       if (stored[key]) return { ok: true, report: stored[key], full: false };
       return { ok: false, error: 'Report not found' };
     }
@@ -645,7 +632,7 @@ async function handleMessage(msg, sender) {
       if (!activeRecording) return { ok: false };
       if (activeRecording.settleUntil && Date.now() < activeRecording.settleUntil) return { ok: true };
 
-      const { actions, vitals } = msg.payload || { actions: [], vitals: [] };
+      const { actions, vitals, fps, customMarks, resources } = msg.payload || { actions: [], vitals: [], fps: [], customMarks: [], resources: [] };
 
       if (actions.length > 0 && activeRecording.debuggeeTabId) {
         const interactive = actions.find((a) => ['CLICK','SUBMIT','DBLCLICK','CHANGE','SPA_ROUTE_CHANGE','NAV_BACK'].indexOf(a.type) !== -1);
@@ -676,6 +663,22 @@ async function handleMessage(msg, sender) {
         vitals[i].frameUrl = sender.url;
         activeRecording.vitals.events.push(vitals[i]);
       }
+      const fpsArr = fps || [];
+      for (let i = 0; i < fpsArr.length; i++) {
+        fpsArr[i].frameUrl = sender.url;
+        fpsArr[i].relativeMs = (fpsArr[i].epoch || Date.now()) - activeRecording.startTime;
+        activeRecording.fps.samples.push(fpsArr[i]);
+      }
+      if (activeRecording.fps.samples.length > MAX_FPS_SAMPLES) {
+        activeRecording.fps.samples = activeRecording.fps.samples.slice(-MAX_FPS_SAMPLES);
+      }
+
+      for (let i = 0; i < (customMarks || []).length; i++) {
+        activeRecording.customMarks.entries.push(customMarks[i]);
+      }
+      for (let i = 0; i < (resources || []).length; i++) {
+        activeRecording.resources.entries.push(resources[i]);
+      }
 
       if (activeRecording.actions.entries.length > 10000)
         activeRecording.actions.entries = activeRecording.actions.entries.slice(-10000);
@@ -702,9 +705,7 @@ async function handleMessage(msg, sender) {
         list = Object.values(activeRecording.network.requests).map(summarizeRequest);
       } else {
         const { lastReport } = await chrome.storage.local.get('lastReport');
-        if (lastReport && Array.isArray(lastReport.network)) {
-          list = lastReport.network.map(summarizeRequest);
-        }
+        if (lastReport && Array.isArray(lastReport.network)) list = lastReport.network.map(summarizeRequest);
       }
       list.sort((a, b) => (a.relativeMs || 0) - (b.relativeMs || 0));
       return { ok: true, requests: list };
@@ -717,9 +718,7 @@ async function handleMessage(msg, sender) {
         req = activeRecording.network.requests[msg.id];
       } else {
         const { lastReport } = await chrome.storage.local.get('lastReport');
-        if (lastReport && Array.isArray(lastReport.network)) {
-          req = lastReport.network.find(r => r.id === msg.id) || null;
-        }
+        if (lastReport && Array.isArray(lastReport.network)) req = lastReport.network.find(r => r.id === msg.id) || null;
       }
       if (!req) return { ok: false, error: 'Request not found' };
       return { ok: true, request: req };
@@ -746,8 +745,119 @@ async function handleMessage(msg, sender) {
   return { ok: false, error: 'Unknown message type' };
 }
 
+// ── Navigation grouping helper ────────────────────────────────────
+function buildNavigationGroups(s, requests, actions, fpsSamples, longTasks) {
+  const totalMs = Math.max(1, (s.endedAt || Date.now()) - s.startTime);
+  const markers = [];
+
+  const committedNavs = (s.navigations || []).filter(n => n.event === 'committed');
+  if (committedNavs.length > 0) {
+    committedNavs.forEach(n => markers.push({ type: 'nav', url: n.url, relativeMs: n.relativeMs }));
+  } else {
+    (s.navigations || []).filter(n => n.event === 'complete').forEach(n => {
+      markers.push({ type: 'nav', url: n.url, relativeMs: Math.max(0, n.relativeMs - 500) });
+    });
+  }
+
+  (actions || []).filter(a => a.type === 'SPA_ROUTE_CHANGE' || a.type === 'NAV_BACK').forEach(a => {
+    markers.push({ type: 'spa', url: a.newUrl || a.url, relativeMs: (a.epoch || 0) - s.startTime });
+  });
+
+  markers.sort((a, b) => a.relativeMs - b.relativeMs);
+
+  const boundaries = [];
+  let lastMs = -Infinity;
+  for (const m of markers) {
+    if (m.relativeMs - lastMs > 150) {
+      boundaries.push(m);
+      lastMs = m.relativeMs;
+    }
+  }
+
+  if (!boundaries.length || boundaries[0].relativeMs > 100) {
+    boundaries.unshift({ type: 'initial', url: s.url || 'initial', relativeMs: 0 });
+  }
+
+   // Fallback: Ensure there is always at least one group
+  if (boundaries.length === 0) {
+    boundaries.push({ type: 'initial', url: s.url || 'initial', relativeMs: 0 });
+  }
+
+  const groups = boundaries.map((b, i) => ({
+    index: i, startMs: b.relativeMs,
+    endMs: i < boundaries.length - 1 ? boundaries[i + 1].relativeMs : totalMs,
+    url: b.url, type: b.type,
+    actions: [], requests: [], fps: [], longtasks: []
+  }));
+
+  const groupFor = (ms) => {
+    let g = 0;
+    for (let i = 0; i < groups.length; i++) {
+      if (groups[i].startMs <= ms) g = i;
+      else break;
+    }
+    return g;
+  };
+
+  (actions || []).forEach(a => {
+    if (a.type === 'SPA_ROUTE_CHANGE' || a.type === 'NAV_BACK') return;
+    const rel = (a.epoch || 0) - s.startTime;
+    if (rel >= 0) groups[groupFor(rel)].actions.push(a);
+  });
+
+  (requests || []).forEach(r => {
+    const rel = (r.relativeMs != null) ? r.relativeMs : ((r.epoch || 0) - s.startTime);
+    if (rel >= 0) groups[groupFor(rel)].requests.push(r);
+  });
+
+  (fpsSamples || []).forEach(f => {
+    const rel = (f.relativeMs != null) ? f.relativeMs : ((f.epoch || 0) - s.startTime);
+    if (rel >= 0) groups[groupFor(rel)].fps.push(f);
+  });
+
+  (longTasks || []).forEach(lt => {
+    const rel = (lt.relativeMs != null) ? lt.relativeMs : 0;
+    if (rel >= 0) groups[groupFor(rel)].longtasks.push(lt);
+  });
+
+  return groups.map((g, i) => {
+    const getPath = (u) => {
+      try { return new URL(u).pathname || '/'; } catch (e) { return String(u || '/').split('?')[0]; }
+    };
+    
+    let name = getPath(g.url);
+    if (i > 0) {
+      const prevPath = getPath(groups[i-1].url);
+      if (prevPath !== name) name = prevPath + ' → ' + name;
+    } else if (g.type === 'initial') {
+      name = 'Initial Load (' + name + ')';
+    }
+
+    const firstInteractive = g.actions.find(a => ['CLICK', 'SUBMIT', 'CHANGE', 'KEYDOWN'].includes(a.type));
+    if (firstInteractive) {
+      const targetName = firstInteractive.targetName || (firstInteractive.target && firstInteractive.target.text);
+      if (targetName) name = '[' + firstInteractive.type + '] ' + targetName.slice(0, 25).replace(/"/g, '') + ' → ' + getPath(g.url);
+    }
+
+    const apiReqs = g.requests.filter(r => ['fetch', 'xhr'].includes((r.type || '').toLowerCase()));
+    const apiTimeMs = apiReqs.length ? Math.max(...apiReqs.map(r => r.durationMs || 0)) : 0;
+
+    const avgFps = g.fps.length ? Math.round(g.fps.reduce((sum, f) => sum + f.fps, 0) / g.fps.length) : 0;
+
+    return {
+      id: 'group-' + i, name,
+      durationMs: g.endMs - g.startMs, apiTimeMs, avgFps,
+      actionCount: g.actions.length, requestCount: g.requests.length, longTaskCount: g.longtasks.length,
+      actionIdxs: g.actions.map(a => (actions || []).indexOf(a)),
+      requestIds: g.requests.map(r => r.id),
+      fpsIdxs: g.fps.map(f => (fpsSamples || []).indexOf(f)),
+      longtaskIdxs: g.longtasks.map(lt => (longTasks || []).indexOf(lt))
+    };
+  });
+}
+
 // ── Build report ─────────────────────────────────────────────────
-function buildPerformanceReport(s) {
+async function buildPerformanceReport(s, prevReport) {
   const requests = Object.values(s.network.requests);
   const failedRequests = requests.filter((r) => r.failed || (r.status && r.status >= 400));
   const errors = s.console.entries.filter((c) => c.level === 'error' || c.level === 'uncaught');
@@ -761,8 +871,66 @@ function buildPerformanceReport(s) {
     else if (v.name === 'INP_EVENT') vitalsByName.INP = Math.max(vitalsByName.INP || 0, v.value);
   }
 
+  const inpEventsRaw = s.vitals.events.filter(v => v.name === 'INP_EVENT');
+  const inpValues = inpEventsRaw.map(v => v.value).sort((a, b) => a - b);
+  let realINP = null;
+  if (inpValues.length > 0) {
+    const p98Index = Math.floor(inpValues.length * 0.98);
+    realINP = inpValues[Math.min(p98Index, inpValues.length - 1)];
+  }
+
+  const renderingMetrics = {
+    fp: null, fcp: null, domInteractive: null, domContentLoaded: null,
+    loadComplete: null, realINP: realINP, elements: [],
+    inpEvents: inpEventsRaw.map(e => ({
+      duration: e.value, name: e.name || 'Interaction', relativeMs: (e.epoch || 0) - s.startTime
+    }))
+  };
+
+  for (const v of s.vitals.events) {
+    if (v.name === 'FP') renderingMetrics.fp = v.value;
+    if (v.name === 'FCP') renderingMetrics.fcp = v.value;
+    if (v.name === 'DOM_INTERACTIVE') renderingMetrics.domInteractive = v.value;
+    if (v.name === 'DOM_CONTENT_LOADED') renderingMetrics.domContentLoaded = v.value;
+    if (v.name === 'LOAD_COMPLETE') renderingMetrics.loadComplete = v.value;
+    if (v.name === 'ELEMENT_TIMING') {
+      renderingMetrics.elements.push({
+        id: v.identifier, tag: v.element, url: v.url,
+        renderTime: Math.round(v.renderTime || v.value), duration: Math.round(v.duration || 0)
+      });
+    }
+  }
+
   const durations = requests.map((r) => r.durationMs).filter(Boolean).sort((a, b) => a - b);
   const pct = (p) => durations.length ? durations[Math.floor(durations.length * p)] : 0;
+
+  const longTasks = s.vitals.events
+    .filter(v => v.name === 'LONGTASK')
+    .map(v => ({
+      duration: v.value, startTime: v.startTime,
+      relativeMs: (v.epoch || 0) - s.startTime, attribution: v.attribution || {}
+    }));
+
+  const fpsSamples = (s.fps && s.fps.samples) || [];
+  const navigationGroups = buildNavigationGroups(s, requests, s.actions.entries, fpsSamples, longTasks);
+
+  // Compute baseline delta
+  let baseline = null;
+  if (prevReport && prevReport.summary) {
+    const curr = {
+      lcp: vitalsByName.LCP || 0,
+      requests: requests.length,
+      errors: errors.length,
+      size: requests.reduce((a, r) => a + (r.encodedDataLength || 0), 0)
+    };
+    const prev = {
+      lcp: prevReport.summary.lcp || 0,
+      requests: prevReport.summary.totalRequests || 0,
+      errors: prevReport.summary.totalErrors || 0,
+      size: prevReport.summary.totalTransferBytes || 0
+    };
+    baseline = { curr, prev, prevDate: prevReport.meta.startedAt };
+  }
 
   const report = {
     reportId: s.id,
@@ -771,7 +939,7 @@ function buildPerformanceReport(s) {
       url: s.url || (s.tabs[0] && s.tabs[0].url) || 'unknown',
       startedAt: s.startTime, endedAt: s.endedAt,
       durationMs: s.endedAt - s.startTime,
-      extensionVersion: '1.9.1'
+      extensionVersion: '1.13.0'
     },
     summary: {
       totalActions: s.actions.entries.length,
@@ -784,15 +952,30 @@ function buildPerformanceReport(s) {
       totalErrors: errors.length,
       screenshotsCount: (s.screenshots || []).length
     },
+    baseline: baseline,
     tabs: s.tabs,
     actions: s.actions.entries,
     network: requests,
-    console: s.console.entries,
+    console: s.console.entries.map(function(c) {
+      return {
+        level: c.level,
+        message: c.message,
+        time: c.time,
+        stack: c.stack || '', // <-- Pass the stack trace
+        url: c.url || ''      // <-- Pass the URL if available
+      };
+    }),
     navigations: s.navigations,
     webVitals: vitalsByName,
     vitalsEvents: s.vitals.events,
     memory: s.memory.samples,
-    screenshots: s.screenshots || []
+    screenshots: s.screenshots || [],
+    fps: fpsSamples,
+    longTasks: longTasks,
+    navigationGroups: navigationGroups,
+    renderingMetrics: renderingMetrics,
+    customMarks: s.customMarks.entries,
+    resources: s.resources.entries
   };
 
   if (self.PerfRedaction) {
@@ -809,11 +992,20 @@ function buildPerformanceReport(s) {
       if (r.postData && R.redactBody) r.postData = R.redactBody(r.postData);
       if (r.responseBody && !r.responseBodyBase64 && R.redactBody) r.responseBody = R.redactBody(r.responseBody);
     });
+    (report.navigationGroups || []).forEach((g) => {
+      if (g.url) g.url = R.redactUrl(g.url);
+    });
+    (report.renderingMetrics.elements || []).forEach((el) => {
+      if (el.url) el.url = R.redactUrl(el.url);
+    });
+    (report.resources || []).forEach((r) => {
+      if (r.name) r.name = R.redactUrl(r.name);
+    });
   }
 
   return report;
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('Perf-Trace-Pulse v1.9.1 installed');
+  console.log('Perf-Lens v1.13.0 installed');
 });

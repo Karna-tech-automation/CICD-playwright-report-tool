@@ -53,6 +53,7 @@ function onPortMessage(message) {
       addLog('Recording stopped');
       stopTimer();
       downloadZipBtn.classList.remove('hidden');
+       loadHistory();
       break;
     case 'REPORT_READY':
       addLog('Report ready: ' + message.reportId);
@@ -431,6 +432,107 @@ function renderTimingTab(req) {
   `;
 }
 
+// ── History Logic ──────────────────────────────────────────────────
+async function loadHistory() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_REPORTS_INDEX' });
+    const container = document.getElementById('historyList');
+    const countBadge = document.getElementById('historyCount');
+    
+    if (!response || !response.ok || !response.reports || !response.reports.length) {
+      container.innerHTML = '<div class="empty" style="padding: 12px; color: #6b7280; text-align: center; font-size: 11px;">No previous recordings found.</div>';
+      if (countBadge) countBadge.textContent = '0';
+      return;
+    }
+
+    if (countBadge) countBadge.textContent = response.reports.length;
+
+    container.innerHTML = response.reports.map(function(report) {
+      const date = new Date(report.startedAt);
+      const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const dateStr = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      
+      let scoreColor = '#8b95a5';
+      if (report.score >= 80) scoreColor = '#22c55e';
+      else if (report.score >= 50) scoreColor = '#f59e0b';
+      else if (report.score > 0) scoreColor = '#ef4444';
+
+      // Use the name the user provided, or fallback to 'Untitled Session'
+      const displayName = report.name && report.name.trim() ? report.name : 'Untitled Session';
+
+      return `
+        <div class="history-item">
+          <div class="history-meta">
+            <span class="history-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>
+            <span class="history-date">${dateStr} at ${timeStr} &middot; <span style="color: ${scoreColor}; font-weight: bold;">${report.score || 0} Score</span></span>
+          </div>
+          <div class="history-actions">
+            <button class="btn-hist download btn-dl-hist" data-id="${report.id}">Download</button>
+            <button class="btn-hist delete btn-del-hist" data-id="${report.id}">Delete</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.btn-dl-hist').forEach(btn => {
+      btn.addEventListener('click', () => downloadHistoryReport(btn.dataset.id));
+    });
+    
+    container.querySelectorAll('.btn-del-hist').forEach(btn => {
+      btn.addEventListener('click', () => deleteHistoryReport(btn.dataset.id));
+    });
+
+  } catch (err) {
+    console.error('Failed to load history:', err);
+  }
+}
+
+async function downloadHistoryReport(id) {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_REPORT_BY_ID', id: id });
+    if (!res || !res.ok) {
+      addLog('Error: Could not load report data.');
+      return;
+    }
+    const report = res.report;
+
+    // Create a timestamped name
+    const date = new Date(report.meta.startedAt || Date.now());
+    const ts = date.toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '-');
+    const baseName = (report.meta.name || 'Session').replace(/[^a-z0-9]/gi, '_');
+    report.meta.name = baseName + '_' + ts;
+
+    let health = null;
+    let budgetResult = null;
+    if (window.PerfHealth) {
+      health = window.PerfHealth.computeHealth(report);
+      budgetResult = window.PerfHealth.evaluateBudget(report, health, window.PerfHealth.BUDGET_DEFAULTS);
+    }
+
+    addLog('Building ZIP for older report...');
+    await window.downloadZipReport(report, health, budgetResult);
+    addLog('Downloaded: ' + report.meta.name + '.zip');
+
+  } catch (err) {
+    addLog('Download error: ' + err.message);
+  }
+}
+
+async function deleteHistoryReport(id) {
+  if (!confirm('Are you sure you want to permanently delete this report?')) return;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'DELETE_REPORT', id: id });
+    if (res.ok) {
+      addLog('Report deleted.');
+      loadHistory();
+    } else {
+      addLog('Failed to delete report.');
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
 // ── Name-prompt modal ──────────────────────────────────────────────
 function askForName(defaultVal) {
   return new Promise((resolve) => {
@@ -479,11 +581,14 @@ recordBtn.addEventListener('click', async () => {
   const status = await chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' });
   if (status && status.recording) {
     await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
-  } else {
+    } else {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const name = recordingNameInput.value.trim();
+    const throttleEl = document.getElementById('throttleSelect');
+    const throttle = throttleEl ? throttleEl.value : 'none'; // <--- NEW
+    
     const res = await chrome.runtime.sendMessage({
-      type: 'START_RECORDING', name: name, tabId: tab.id
+      type: 'START_RECORDING', name: name, tabId: tab.id, throttle: throttle // <--- PASSED HERE
     });
     if (!res || !res.ok) addLog('Error: ' + ((res && res.error) || 'unknown'));
   }
@@ -504,7 +609,7 @@ downloadZipBtn.addEventListener('click', async () => {
     if (!res || !res.ok) throw new Error((res && res.error) || 'No report');
     const report = res.report;
 
-    if (!report.meta.name || !report.meta.name.trim()) {
+       if (!report.meta.name || !report.meta.name.trim()) {
       const chosen = await askForName('perf-report');
       if (!chosen) {
         downloadZipBtn.disabled = false;
@@ -513,7 +618,22 @@ downloadZipBtn.addEventListener('click', async () => {
         return;
       }
       report.meta.name = chosen;
-      try { await chrome.storage.local.set({ lastReport: report }); } catch (_) {}
+      
+      try { 
+        // 1. Save to the active report
+        await chrome.storage.local.set({ lastReport: report }); 
+        
+        // 2. Update the History Index so the UI reflects the new name
+        const stored = await chrome.storage.local.get('reportsIndex');
+        if (stored.reportsIndex) {
+          const idx = stored.reportsIndex.findIndex(r => r.id === report.reportId);
+          if (idx !== -1) {
+            stored.reportsIndex[idx].name = chosen;
+            await chrome.storage.local.set({ reportsIndex: stored.reportsIndex });
+            loadHistory(); // Refresh the list visually
+          }
+        }
+      } catch (_) {}
     }
 
     let health = null;
@@ -522,7 +642,7 @@ downloadZipBtn.addEventListener('click', async () => {
       health = window.PerfHealth.computeHealth(report);
       budgetResult = window.PerfHealth.evaluateBudget(report, health, window.PerfHealth.BUDGET_DEFAULTS);
     } else {
-      console.warn('[PTP] window.PerfHealth is missing. Health section will be empty.');
+      console.warn('[Perf-Lens] window.PerfHealth is missing. Health section will be empty.');
     }
 
     await window.downloadZipReport(report, health, budgetResult);
@@ -546,6 +666,7 @@ downloadZipBtn.addEventListener('click', async () => {
 
 // ── Init ───────────────────────────────────────────────────────────
 connectToServiceWorker();
+loadHistory();
 chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' }, (res) => {
   if (res && res.recording) {
     applyStatus(true, res.currentRecording);

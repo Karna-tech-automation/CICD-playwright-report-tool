@@ -1,6 +1,6 @@
 /**
- * Perf-Trace-Pulse — reportTheme.js
- * v4.6.0 — no collapse/expand; standard sections
+ * Perf-Lens — reportTheme.js
+ * v5.4.0 — Fixed Custom Marks Collapse/Expand logic
  */
 (function (root) {
   'use strict';
@@ -11,7 +11,7 @@
       return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c];
     });
   }
-  function formatDuration(ms) {
+    function formatDuration(ms) {
     if (ms == null || isNaN(ms) || ms <= 0) return '—';
     if (ms < 1000)  return Math.round(ms) + ' ms';
     if (ms < 60000) return (ms / 1000).toFixed(2) + ' s';
@@ -23,7 +23,7 @@
     return d;
   }
   function shortPath(u) {
-    try { var x = new URL(u); return x.pathname.split('/').slice(-2).join('/'); }
+    try { var x = new URL(u); return x.pathname.split('/').slice(-2).join('/') || '/'; }
     catch (e) { return String(u || ''); }
   }
   function bytesToKB(b) { return Math.round((b || 0) / 1024); }
@@ -45,7 +45,7 @@
     return { dns: dns, connect: connect, ssl: ssl, send: send, wait: wait, receive: receive };
   }
 
-  function transformNetworkItem(r) {
+   function transformNetworkItem(r) {
     var url  = r.url || '';
     var host = r.host || extractHost(url);
     var path = r.path || extractPath(url);
@@ -54,14 +54,28 @@
       var parts = String(path).split('/').filter(Boolean);
       name = parts.length ? parts[parts.length - 1] : url;
     }
+
+    // Normalize the type so it matches our dropdown values
+    var rawType = (r.type || '').toLowerCase();
+    var mime = (r.mimeType || '').toLowerCase();
+    var normType = 'other';
+
+    if (rawType === 'script' || mime.indexOf('javascript') !== -1) normType = 'js';
+    else if (rawType === 'stylesheet' || mime.indexOf('css') !== -1) normType = 'css';
+    else if (rawType === 'document' || mime.indexOf('html') !== -1) normType = 'html';
+    else if (rawType === 'image') normType = 'img';
+    else if (rawType === 'font') normType = 'font';
+    else if (rawType === 'xhr' || rawType === 'fetch') normType = 'fetch';
+
     return {
+      id:          r.id,
       name:        name,
       host:        host,
       path:        path,
       method:      String(r.method || 'GET').toUpperCase(),
       status:      r.status,
       statusText:  r.statusText || '',
-      type:        r.type || 'other',
+      type:        normType, // <-- Using the normalized type here
       initiator:   r.initiator || 'script',
       size:        r.size || r.encodedDataLength || 0,
       time:        r.time != null ? r.time : (r.durationMs || 0),
@@ -88,12 +102,14 @@
     });
   }
 
-  function transformConsole(con) {
+   function transformConsole(con) {
     return (con || []).map(function (c) {
       return {
         level:   c.level || 'log',
         message: c.message || '',
-        time:    c.time || (c.timestamp ? new Date(c.timestamp).toLocaleTimeString() : '')
+        time:    c.time || (c.timestamp ? new Date(c.timestamp).toLocaleTimeString() : ''),
+        stack:   c.stack || '', // Keep the stack trace
+        url:     c.url || ''
       };
     });
   }
@@ -207,25 +223,21 @@
   var CSS = '*{box-sizing:border-box;margin:0;padding:0}' +
     ':root{--bg:#f6f8fb;--surface:#fff;--surface-alt:#fafbfc;--border:#e6ebf1;--border-strong:#d1d9e6;--text:#0a2540;--text-mid:#4a5568;--text-muted:#94a3b8;--brand:#635bff;--brand-soft:#eef2ff;--success:#0e6245;--success-bg:#d1f4dd;--warn:#9a5b00;--warn-bg:#fef3d0;--danger:#b3261e;--danger-bg:#fdd;--info:#155e75;--info-bg:#cffafe;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}' +
     'html,body{max-width:100%;overflow-x:hidden}' +
-    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;font-size:13px;padding:0 24px 40px;-webkit-font-smoothing:antialiased}' +
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;font-size:13px;padding:32px 24px 40px;-webkit-font-smoothing:antialiased}' +
     '.wrap{max-width:1440px;margin:0 auto}' +
-    '.hero{position:relative;margin:0 -24px;overflow:hidden;background:#050f2a;line-height:0}' +
-    '.hero-img{display:block;width:100%;height:auto;max-height:420px;object-fit:cover;object-position:center center;user-select:none;pointer-events:none}' +
-    '@media (max-width:720px){.hero-img{max-height:260px;object-position:left top}}' +
-    '.rpt-header{position:relative;z-index:5;max-width:1300px;margin:-260px auto 130px;display:flex;align-items:center;gap:24px;background:linear-gradient(135deg,#ffffff 0%,#fafbff 55%,#f5f7ff 100%);border:1px solid var(--border);border-radius:16px;padding:24px 28px 24px 32px;box-shadow:0 20px 60px rgba(10,37,64,.16),0 4px 12px rgba(10,37,64,.06);overflow:hidden}' +
-    '.rpt-accent{position:absolute;left:0;top:0;bottom:0;width:5px;border-radius:16px 0 0 16px}' +
-    '.rpt-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px}' +
+        '.rpt-header{position:relative;z-index:5;max-width:1300px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:center;border-radius:16px;padding:24px 32px;box-shadow:0 4px 20px rgba(0,0,0,.05);transition:all 0.3s}' +
+    '.rpt-main{display:flex;flex-direction:column;gap:12px;flex:1;min-width:0}' +
     '.rpt-id{display:flex;align-items:center;gap:16px;min-width:0}' +
-    '.rpt-logo{width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#eef1ff,#e0e7ff);display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid #dbe3ff;box-shadow:inset 0 1px 0 rgba(255,255,255,.7),0 2px 6px rgba(99,91,255,.10)}' +
-    '.rpt-titles{min-width:0;display:flex;flex-direction:column;gap:6px}' +
-    '.rpt-title{font-size:22px;font-weight:800;letter-spacing:-.5px;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}' +
+    '.rpt-logo{width:56px;height:56px;border-radius:14px;background:#ffffff;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.06)}' +
+    '.rpt-titles{min-width:0;display:flex;flex-direction:column;gap:4px}' +
+    '.rpt-title{font-size:24px;font-weight:800;letter-spacing:-.5px;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:inherit}' +
     '.rpt-host{display:flex;align-items:center;gap:8px}' +
-    '.rpt-host-pill{display:inline-flex;align-items:center;padding:3px 10px;background:#eef2ff;color:#4338ca;border-radius:999px;font-size:11.5px;font-weight:600;font-family:var(--mono);letter-spacing:.2px}' +
-    '.rpt-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--text-mid)}' +
+    '.rpt-host-pill{display:inline-flex;align-items:center;padding:3px 10px;background:rgba(255,255,255,0.5);border-radius:999px;font-size:11.5px;font-weight:700;font-family:var(--mono)}' +
+    '.rpt-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px;font-weight:500;color:inherit;opacity:0.85}' +
     '.rpt-meta-item{display:inline-flex;align-items:baseline;gap:4px}' +
-    '.rpt-meta-item b{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums}' +
-    '.rpt-meta-sep{color:#cbd5e1}' +
-    '.rpt-health{display:flex;align-items:center;gap:16px;flex-shrink:0;padding-left:24px;border-left:1px solid var(--border)}' +
+    '.rpt-meta-item b{font-weight:800;font-variant-numeric:tabular-nums;color:inherit}' +
+    '.rpt-meta-sep{opacity:0.5}' +
+    '.rpt-health{display:flex;align-items:center;gap:16px;flex-shrink:0;padding-left:32px;border-left:1px solid rgba(0,0,0,0.08);margin-left:24px}' +
     '.rpt-ring{position:relative;width:72px;height:72px;flex-shrink:0}' +
     '.rpt-ring svg{display:block;width:72px;height:72px}' +
     '.rpt-ring-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;letter-spacing:-1px;color:var(--text);font-variant-numeric:tabular-nums}' +
@@ -419,22 +431,175 @@
     '.shot .shot-time{color:var(--text-muted);font-family:var(--mono);font-size:10px;margin-top:2px}' +
     '.shot .shot-tag{position:absolute;top:6px;left:6px;background:rgba(99,91,255,.92);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;text-transform:uppercase}' +
     '@media (max-width:1100px){.stats{grid-template-columns:repeat(3,1fr)}.vitals{grid-template-columns:repeat(3,1fr)}.vital.open{grid-column:span 3}.col-wf{display:none}.timing-name{flex:0 0 200px}.timing-ttfb{display:none}}' +
-    '@media (max-width:720px){.rpt-header{margin:-40px auto 24px;padding:18px 20px 18px 22px;flex-direction:column;align-items:flex-start;gap:16px}.rpt-title{font-size:16px;white-space:normal}.rpt-main{width:100%}.rpt-health{padding-left:0;border-left:none;padding-top:14px;border-top:1px solid var(--border);width:100%}.rpt-ring,.rpt-ring svg{width:64px;height:64px}.rpt-ring-num{font-size:20px}}' +
-    '@media (max-width:640px){body{padding:0 12px 32px}.hero{margin:0 -12px}.stats,.vitals{grid-template-columns:repeat(2,1fr)}.vital.open{grid-column:span 2}.col-init,.col-wf{display:none}.kv{grid-template-columns:1fr}.kv .k{font-weight:700;padding-top:8px}}';
+    '@media (max-width:720px){.rpt-header{margin:0 auto 24px;padding:20px;flex-direction:column;align-items:flex-start;gap:20px}.rpt-health{padding-left:0;border-left:none;padding-top:16px;border-top:1px solid rgba(0,0,0,0.08);margin-left:0;width:100%;justify-content:space-between}}' +
+    '@media (max-width:640px){body{padding:0 12px 32px}.hero{margin:0 -12px}.stats,.vitals{grid-template-columns:repeat(2,1fr)}.vital.open{grid-column:span 2}.col-init,.col-wf{display:none}.kv{grid-template-columns:1fr}.kv .k{font-weight:700;padding-top:8px}}' +
+    
+    /* ── Actionable Insights ── */
+    '.insight-list{display:flex;flex-direction:column;gap:10px;margin-top:12px}' +
+    '.insight-item{display:flex;flex-direction:column;border-radius:8px;background:var(--surface-alt);border-left:4px solid var(--border);overflow:hidden}' +
+    '.insight-item.bad{border-left-color:var(--danger)}' +
+    '.insight-item.warn{border-left-color:var(--warn)}' +
+    '.insight-item.good{border-left-color:var(--success)}' +
+    '.insight-header{display:flex;align-items:flex-start;gap:12px;padding:14px;cursor:pointer;transition:background 0.15s}' +
+    '.insight-header:hover{background:rgba(0,0,0,0.02)}' +
+    '.insight-item.bad .insight-header{background:var(--danger-bg)}' +
+    '.insight-item.warn .insight-header{background:var(--warn-bg)}' +
+    '.insight-item.good .insight-header{background:var(--success-bg)}' +
+    '.insight-icon{font-size:18px;flex-shrink:0;line-height:1.2}' +
+    '.insight-text{font-size:13px;line-height:1.5;color:var(--text);flex:1}' +
+    '.insight-text strong{font-weight:700}' +
+    '.insight-text code{background:rgba(0,0,0,0.08);padding:2px 6px;border-radius:4px;font-family:var(--mono);font-size:11.5px}' +
+    '.insight-chev{font-size:10px;color:var(--text-muted);transition:transform .15s;margin-top:4px}' +
+    '.insight-item.open .insight-chev{transform:rotate(90deg)}' +
+    '.insight-detail{display:none;padding:0 14px 14px 44px;font-family:var(--mono);font-size:11.5px;color:var(--text-mid);border-top:1px dashed rgba(0,0,0,0.1);margin:0 14px}' +
+    '.insight-item.open .insight-detail{display:block}' +
+    '.insight-detail ul{margin:8px 0 0 0;padding-left:16px}' +
+    '.insight-detail li{margin-bottom:6px;word-break:break-all}' +
+    
+        /* ── API Leaderboard ── */
+    '.api-leaderboard-table{width:100%;border-collapse:collapse;font-size:12px}' +
+    '.api-leaderboard-table th{text-align:left;padding:8px;background:var(--surface-alt);border-bottom:1px solid var(--border);font-size:10px;text-transform:uppercase;color:var(--text-muted);letter-spacing:0.5px}' +
+    '.api-leaderboard-table td{padding:8px;border-bottom:1px solid var(--border)}' +
+    '.api-leaderboard-table tr:last-child td{border-bottom:none}' +
+    '.api-leaderboard-table tr:hover{background:var(--surface-alt)}' +
+    '.api-leaderboard-table .endpoint{font-family:var(--mono);font-size:11.5px;word-break:break-all;color:var(--text)}' +
+    '.api-leaderboard-table .time-bad{color:var(--danger);font-weight:600}' +
+    '.api-leaderboard-table .time-warn{color:var(--warn);font-weight:600}' +
+    '.api-leaderboard-table .fail-bad{color:var(--danger);font-weight:600}' +
+
+        /* ── Memory Chart ── */
+    '.mem-chart-wrap{position:relative;width:100%;height:240px;margin-top:16px}' +
+    '.mem-chart-svg{width:100%;height:100%;overflow:visible}' +
+    '.mem-chart-axis{stroke:#e2e8f0;stroke-width:1}' +
+    '.mem-chart-line{fill:none;stroke:var(--brand);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}' +
+    '.mem-chart-area{fill:rgba(99,91,255,0.08)}' +
+    '.mem-chart-dot{fill:#fff;stroke:var(--brand);stroke-width:2;cursor:pointer;transition:all .1s}' +
+    '.mem-chart-dot:hover{fill:var(--brand);stroke:#fff;stroke-width:3;r:5}' +
+    '.mem-chart-label{font-size:10px;fill:var(--text-muted);font-family:var(--mono)}' +
+
+    /* ── FPS card ── */
+    '.fps-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}' +
+    '.fps-stat{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;cursor:pointer;position:relative;overflow:hidden;transition:transform .12s,box-shadow .12s}' +
+    '.fps-stat:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(10,37,64,.06)}' +
+    '.fps-stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#94a3b8}' +
+    '.fps-stat.good::before{background:#16a34a}.fps-stat.warn::before{background:#ea580c}.fps-stat.bad::before{background:#dc2626}' +
+    '.fps-stat .fl{font-size:10px;color:var(--text-mid);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}' +
+    '.fps-stat .fl .chev{font-size:10px;color:var(--text-muted);transition:transform .15s}' +
+    '.fps-stat.open .fl .chev{transform:rotate(90deg);color:var(--brand)}' +
+    '.fps-stat .fv{font-size:22px;font-weight:700;letter-spacing:-.5px;line-height:1.1;font-variant-numeric:tabular-nums}' +
+    '.fps-stat .fs{font-size:11px;color:var(--text-muted);margin-top:3px}' +
+    '.fps-detail{background:var(--surface-alt);border:1px solid var(--border);border-radius:10px;padding:12px 16px;max-height:340px;overflow-y:auto;display:none}' +
+    '.fps-detail.open{display:block}' +
+    '.fps-row{display:flex;align-items:center;gap:12px;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px}' +
+    '.fps-row:last-child{border-bottom:none}' +
+    '.fps-row-time{flex:0 0 100px;font-family:var(--mono);font-size:11px;color:var(--text-muted)}' +
+    '.fps-row-bar{flex:1;height:14px;background:#eef2f7;border-radius:3px;position:relative;overflow:hidden}' +
+    '.fps-row-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px}' +
+    '.fps-row-val{flex:0 0 70px;text-align:right;font-family:var(--mono);font-size:11.5px;font-weight:600}' +
+    '.fps-trunc{font-family:-apple-system,sans-serif;font-size:11.5px;color:var(--text-muted);font-style:italic;padding:8px 0}' +
+    
+    /* ── Rendering & Interaction Timings Card ── */
+    '.render-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}' +
+    '.render-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;cursor:pointer;position:relative;overflow:hidden;transition:transform .12s,box-shadow .12s}' +
+    '.render-card:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(10,37,64,.06)}' +
+    '.render-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#94a3b8}' +
+    '.render-card.good::before{background:#16a34a}.render-card.warn::before{background:#ea580c}.render-card.bad::before{background:#dc2626}' +
+    '.render-card .rl{font-size:10px;color:var(--text-mid);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}' +
+    '.render-card .rl .chev{font-size:10px;color:var(--text-muted);transition:transform .15s}' +
+    '.render-card.open .rl .chev{transform:rotate(90deg);color:var(--brand)}' +
+    '.render-card .rv{font-size:22px;font-weight:700;letter-spacing:-.5px;line-height:1.1;font-variant-numeric:tabular-nums}' +
+    '.render-card .rs{font-size:11px;color:var(--text-muted);margin-top:3px}' +
+    '.render-detail-panel{display:none;background:var(--surface-alt);border:1px solid var(--border);border-radius:10px;padding:16px;margin-top:12px;animation:fadeIn .2s}' +
+    '.render-detail-panel.open{display:block}' +
+    '.render-grid-inner{display:grid;grid-template-columns:1fr 1fr;gap:20px}' +
+    '.render-block h4{font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}' +
+    '.render-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12px}' +
+    '.render-row:last-child{border-bottom:none}' +
+    '.render-row .rk{color:var(--text-mid)}' +
+    '.render-row .rv{font-family:var(--mono);font-weight:600;color:var(--text)}' +
+    '.render-el-list{max-height:160px;overflow-y:auto;margin-top:4px}' +
+    '.render-el-item{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:11.5px}' +
+    '.render-el-item:last-child{border-bottom:none}' +
+    '@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}' +
+    '@media (max-width:720px){.render-grid{grid-template-columns:repeat(2,1fr)}.render-grid-inner{grid-template-columns:1fr}}' +
+    /* ── Navigation grouping card ── */
+    '.nav-grid{display:flex;flex-direction:column;gap:8px}' +
+    '.nav-card{background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--brand);border-radius:10px;padding:12px 16px;cursor:pointer;transition:transform .12s,box-shadow .12s}' +
+    '.nav-card:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(10,37,64,.06)}' +
+    '.nav-card .nh{display:flex;justify-content:space-between;align-items:center;gap:12px}' +
+    '.nav-card .nh-left{display:flex;align-items:center;gap:8px;min-width:0;flex:1}' +
+    '.nav-card .nh-chev{font-size:11px;color:var(--text-muted);transition:transform .15s;flex-shrink:0}' +
+    '.nav-card.open .nh-chev{transform:rotate(90deg);color:var(--brand)}' +
+    '.nav-card .nh-url{font-family:var(--mono);font-size:13px;color:var(--text);font-weight:600;word-break:break-all;min-width:0;flex:1}' +
+    '.nav-card .nh-metrics{display:flex;gap:16px;align-items:center;flex-shrink:0}' +
+    '.nav-card .nh-metric{display:flex;flex-direction:column;align-items:flex-end;gap:2px}' +
+    '.nav-card .nh-metric .k{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);font-weight:700}' +
+    '.nav-card .nh-metric .v{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text)}' +
+    '.nav-card .nh-metric.good .v{color:#16a34a}' +
+    '.nav-card .nh-metric.warn .v{color:#ea580c}' +
+    '.nav-card .nh-metric.bad .v{color:#dc2626}' +
+    '.nav-card .nh-counts{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--text-mid);padding-left:22px;margin-top:6px}' +
+    '.nav-card .nh-counts strong{color:var(--text);font-weight:700;margin-right:4px;font-variant-numeric:tabular-nums}' +
+    '.nav-detail{margin-top:12px;padding-top:12px;border-top:1px dashed var(--border);display:none}' +
+    '.nav-card.open .nav-detail{display:block}' +
+    '.nav-detail h4{font-size:10.5px;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.6px;margin:12px 0 6px;display:flex;align-items:center;gap:6px}' +
+    '.nav-detail h4::before{content:"";width:5px;height:5px;background:var(--brand);border-radius:50%}' +
+    '.nav-detail h4:first-child{margin-top:0}' +
+    '.nav-detail-list{font-family:var(--mono);font-size:11px;color:var(--text-mid);line-height:1.5;max-height:180px;overflow-y:auto;background:var(--surface-alt);border-radius:6px;padding:6px 10px}' +
+    '.nav-detail-list .ni{padding:3px 0;border-bottom:1px solid var(--border);word-break:break-all}' +
+    '.nav-detail-list .ni:last-child{border-bottom:none}' +
+    '.nav-detail-empty{font-family:-apple-system,sans-serif;font-size:11.5px;color:var(--text-muted);font-style:italic;padding:4px 0}' +
+    '@media (max-width:720px){.fps-grid{grid-template-columns:repeat(2,1fr)}.nav-card .nh{flex-direction:column;align-items:flex-start}.nav-card .nh-metrics{width:100%;justify-content:flex-start;margin-top:8px;padding-left:22px}}' +
+    /* ── Baseline, Marks, Resources, Compare Cards ── */
+    '.base-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}' +
+    '.base-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;cursor:pointer;position:relative;overflow:hidden;transition:transform .12s,box-shadow .12s}' +
+    '.base-card:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(10,37,64,.06)}' +
+    '.base-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#94a3b8}' +
+    '.base-card.good::before{background:#16a34a}.base-card.warn::before{background:#ea580c}.base-card.bad::before{background:#dc2626}' +
+    '.base-card .fl{font-size:10px;color:var(--text-mid);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}' +
+    '.base-card .fl .chev{font-size:10px;color:var(--text-muted);transition:transform .15s}' +
+    '.base-card.open .fl .chev{transform:rotate(90deg);color:var(--brand)}' +
+    '.base-card .fv{font-size:22px;font-weight:700;letter-spacing:-.5px;line-height:1.1;font-variant-numeric:tabular-nums}' +
+    '.base-card .fs{font-size:11px;color:var(--text-muted);margin-top:3px}' +
+    '.base-detail{background:var(--surface-alt);border:1px solid var(--border);border-radius:10px;padding:12px 16px;max-height:340px;overflow-y:auto;display:none}' +
+    '.base-detail.open{display:block}' +
+    '.list-grid{display:flex;flex-direction:column;gap:8px}' +
+    '.list-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;cursor:pointer;transition:transform .12s,box-shadow .12s}' +
+    '.list-card:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(10,37,64,.06)}' +
+    '.list-card .lh{display:flex;justify-content:space-between;align-items:center;gap:12px}' +
+    '.list-card .lh-left{display:flex;align-items:center;gap:8px;min-width:0;flex:1}' +
+    '.list-card .lh-chev{font-size:11px;color:var(--text-muted);transition:transform .15s;flex-shrink:0}' +
+    '.list-card.open .lh-chev{transform:rotate(90deg);color:var(--brand)}' +
+    '.list-card .lh-name{font-family:var(--mono);font-size:13px;color:var(--text);font-weight:600;word-break:break-all;min-width:0;flex:1}' +
+    '.list-detail{margin-top:12px;padding-top:12px;border-top:1px dashed var(--border);display:none}' +
+    '.list-card.open .list-detail{display:block}' +
+    '.list-detail h4{font-size:10.5px;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.6px;margin:12px 0 6px;display:flex;align-items:center;gap:6px}' +
+    '.list-detail h4::before{content:"";width:5px;height:5px;background:var(--brand);border-radius:50%}' +
+    '.list-detail h4:first-child{margin-top:0}' +
+    '.list-detail-list{font-family:var(--mono);font-size:11px;color:var(--text-mid);line-height:1.5;max-height:180px;overflow-y:auto;background:var(--surface-alt);border-radius:6px;padding:6px 10px}' +
+    '.list-detail-list .ni{padding:3px 0;border-bottom:1px solid var(--border);word-break:break-all}' +
+    '.list-detail-list .ni:last-child{border-bottom:none}' +
+    '.upload-zone{border:2px dashed var(--border-strong);border-radius:10px;padding:24px;text-align:center;cursor:pointer;transition:all .15s;background:var(--surface-alt)}' +
+    '.upload-zone:hover,.upload-zone.dragover{border-color:var(--brand);background:var(--brand-soft)}' +
+    '.upload-zone p{font-size:13px;color:var(--text-mid);margin-bottom:8px}' +
+    '.upload-zone span{font-size:11.5px;color:var(--text-muted)}' +
+    '.upload-input{display:none}' +
+    '.compare-btn{background:var(--surface);border:1px solid var(--border);padding:4px 8px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;cursor:pointer;font-family:inherit;color:var(--text-mid);transition:all .15s;line-height:1.2}' +
+    '.compare-btn.primary{background:var(--brand);color:#fff;border-color:var(--brand)}' +
+    '.compare-btn.primary:hover{filter:brightness(1.1)}' +
+    '.compare-btn.danger:hover{background:var(--danger-bg);color:var(--danger);border-color:var(--danger)}' +
+    '.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}' +
+    '.compare-box{border:1px solid var(--border);border-radius:8px;overflow:hidden}' +
+    '.compare-box-header{background:var(--surface-alt);padding:8px 12px;font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-mid);border-bottom:1px solid var(--border)}' +
+    '.compare-row{display:flex;justify-content:space-between;padding:6px 12px;border-bottom:1px solid var(--border);font-size:12px}' +
+    '.compare-row:last-child{border-bottom:none}' +
+    '.compare-row .ck{color:var(--text-mid)}' +
+    '.compare-row .cv{font-family:var(--mono);font-weight:600}' +
+    '@media (max-width:720px){.base-grid{grid-template-columns:repeat(2,1fr)}.compare-grid{grid-template-columns:1fr}}';
 
   /* ======================= HTML section builders ======================= */
 
-  function buildHero(report) {
-    return '' +
-      '<div class="hero">' +
-        '<img class="hero-img" src="hero-banner.png" alt="Perf-Trace-Pulse" ' +
-          'onerror="this.onerror=null;this.style.display=\'none\';' +
-                  'this.parentElement.style.background=\'linear-gradient(135deg,#050f2a,#153a7a)\';' +
-                  'this.parentElement.style.minHeight=\'260px\'"/>' +
-      '</div>';
-  }
-
-  function buildReportHeader(report, health) {
+    function buildReportHeader(report, health) {
     var meta = report.meta || {};
     var name = meta.name || 'recording';
     var url  = meta.url || '';
@@ -449,14 +614,14 @@
     var verdict = (h && h.verdictLabel) || 'Unknown';
     var vClass  = (h && h.verdictClass) || 'average';
 
-    var palettes = {
-      healthy:  { ring:'#0e6245', chipBg:'#d1f4dd', chipFg:'#0e6245', accent:'#0e6245' },
-      good:     { ring:'#0e6245', chipBg:'#d1f4dd', chipFg:'#0e6245', accent:'#0e6245' },
-      average:  { ring:'#b54708', chipBg:'#fef3d0', chipFg:'#9a5b00', accent:'#b54708' },
-      warn:     { ring:'#b54708', chipBg:'#fef3d0', chipFg:'#9a5b00', accent:'#b54708' },
-      high:     { ring:'#b3261e', chipBg:'#fdd',    chipFg:'#b3261e', accent:'#b3261e' },
-      critical: { ring:'#b3261e', chipBg:'#fdd',    chipFg:'#b3261e', accent:'#b3261e' },
-      bad:      { ring:'#b3261e', chipBg:'#fdd',    chipFg:'#b3261e', accent:'#b3261e' }
+         var palettes = {
+      healthy:  { ring:'#166534', chipBg:'#dcfce7', chipFg:'#166534', text:'#14532d', bg:'#f0fdf4', border:'#bbf7d0' },
+      good:     { ring:'#166534', chipBg:'#dcfce7', chipFg:'#166534', text:'#14532d', bg:'#f0fdf4', border:'#bbf7d0' },
+      average:  { ring:'#d97706', chipBg:'#fef3c7', chipFg:'#92400e', text:'#78350f', bg:'#fffbeb', border:'#fde68a' },
+      warn:     { ring:'#d97706', chipBg:'#fef3c7', chipFg:'#92400e', text:'#78350f', bg:'#fffbeb', border:'#fde68a' },
+      high:     { ring:'#dc2626', chipBg:'#fee2e2', chipFg:'#991b1b', text:'#7f1d1d', bg:'#fef2f2', border:'#fecaca' },
+      critical: { ring:'#dc2626', chipBg:'#fee2e2', chipFg:'#991b1b', text:'#7f1d1d', bg:'#fef2f2', border:'#fecaca' },
+      bad:      { ring:'#dc2626', chipBg:'#fee2e2', chipFg:'#991b1b', text:'#7f1d1d', bg:'#fef2f2', border:'#fecaca' }
     };
     var p = palettes[vClass] || palettes.average;
 
@@ -467,49 +632,192 @@
     var host = '';
     try { host = new URL(url).host; } catch (e) { host = url; }
 
-    return '' +
-      '<div class="rpt-header">' +
-        '<div class="rpt-accent" style="background:linear-gradient(180deg,' + p.accent + ' 0%,var(--brand) 100%)"></div>' +
-        '<div class="rpt-main">' +
-          '<div class="rpt-id">' +
-            '<div class="rpt-logo">' +
-              '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" width="28" height="28">' +
-                '<path d="M 4 26 L 16 4 L 28 26 L 22 26 L 16 13 L 10 26 Z" fill="#635bff"/>' +
+        return '' +
+      '<div class="rpt-header" style="background:' + p.bg + '; border: 1px solid ' + p.border + '; color:' + p.text + '">' +
+          '<div class="rpt-main">' +
+            '<div class="rpt-id">' +
+              '<div class="rpt-logo">' +
+                '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" width="28" height="28">' +
+                  '<path d="M 4 26 L 16 4 L 28 26 L 22 26 L 16 13 L 10 26 Z" fill="' + p.ring + '"/>' +
+                '</svg>' +
+              '</div>' +
+              '<div class="rpt-titles">' +
+                '<div class="rpt-title">' + escapeHtml(name) + '</div>' +
+                '<div class="rpt-host"><span class="rpt-host-pill" style="color:' + p.text + '">' + escapeHtml(host || '—') + '</span></div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="rpt-meta">' +
+              '<span class="rpt-meta-item"><b>' + new Date(startedAt).toLocaleString() + '</b></span>' +
+              '<span class="rpt-meta-sep">·</span>' +
+              '<span class="rpt-meta-item"><b>' + dur + '</b> duration</span>' +
+              '<span class="rpt-meta-sep">·</span>' +
+              '<span class="rpt-meta-item"><b>' + actions + '</b> actions</span>' +
+              '<span class="rpt-meta-sep">·</span>' +
+              '<span class="rpt-meta-item"><b>' + netCount + '</b> requests</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="rpt-health">' +
+            '<div class="rpt-ring">' +
+              '<svg viewBox="0 0 72 72">' +
+                '<circle cx="36" cy="36" r="28" stroke="rgba(0,0,0,0.05)" stroke-width="7" fill="none"/>' +
+                '<circle cx="36" cy="36" r="28" stroke="' + p.ring + '" stroke-width="7" fill="none" ' +
+                  'stroke-dasharray="' + circ.toFixed(2) + '" stroke-dashoffset="' + off.toFixed(2) + '" ' +
+                  'stroke-linecap="round" transform="rotate(-90 36 36)"/>' +
               '</svg>' +
+              '<div class="rpt-ring-num" style="color:' + p.ring + '">' + (score == null ? '—' : score) + '</div>' +
             '</div>' +
-            '<div class="rpt-titles">' +
-              '<div class="rpt-title">' + escapeHtml(name) + '</div>' +
-              '<div class="rpt-host"><span class="rpt-host-pill">' + escapeHtml(host || '—') + '</span></div>' +
+            '<div class="rpt-health-meta">' +
+              '<div class="rpt-health-lbl" style="color:' + p.text + '; opacity:0.6">Health Score</div>' +
+              '<div class="rpt-health-chip" style="background:' + p.chipBg + '; color:' + p.chipFg + '">' + escapeHtml(verdict) + '</div>' +
             '</div>' +
           '</div>' +
-          '<div class="rpt-meta">' +
-            '<span class="rpt-meta-item"><b>' + new Date(startedAt).toLocaleString() + '</b></span>' +
-            '<span class="rpt-meta-sep">·</span>' +
-            '<span class="rpt-meta-item"><b>' + dur + '</b>duration</span>' +
-            '<span class="rpt-meta-sep">·</span>' +
-            '<span class="rpt-meta-item"><b>' + actions + '</b>actions</span>' +
-            '<span class="rpt-meta-sep">·</span>' +
-            '<span class="rpt-meta-item"><b>' + netCount + '</b>requests</span>' +
-          '</div>' +
-        '</div>' +
-        '<div class="rpt-health">' +
-          '<div class="rpt-ring">' +
-            '<svg viewBox="0 0 72 72">' +
-              '<circle cx="36" cy="36" r="28" stroke="#eef2f7" stroke-width="7" fill="none"/>' +
-              '<circle cx="36" cy="36" r="28" stroke="' + p.ring + '" stroke-width="7" fill="none" ' +
-                'stroke-dasharray="' + circ.toFixed(2) + '" stroke-dashoffset="' + off.toFixed(2) + '" ' +
-                'stroke-linecap="round" transform="rotate(-90 36 36)"/>' +
-            '</svg>' +
-            '<div class="rpt-ring-num">' + (score == null ? '—' : score) + '</div>' +
-          '</div>' +
-          '<div class="rpt-health-meta">' +
-            '<div class="rpt-health-lbl">Health Score</div>' +
-            '<div class="rpt-health-chip" style="background:' + p.chipBg + ';color:' + p.chipFg + '">' + escapeHtml(verdict) + '</div>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
+        '</div>';
   }
+   function buildActionableInsightsHTML(report) {
+    var s = report.summary || {};
+    var net = report.network || [];
+    var longTasks = report.longTasks || [];
+    var con = report.console || [];
+    var insights = [];
 
+    // 1. LCP Check
+    var lcp = s.lcp || 0;
+    if (lcp > 2500) {
+      insights.push({ 
+        type: 'bad', 
+        title: '<strong>LCP is slow (' + Math.round(lcp) + 'ms).</strong> The largest element took too long to render.',
+        detail: '<ul><li>Target: Under 2500ms</li><li>Your Time: ' + Math.round(lcp) + 'ms</li><li><strong>Fix:</strong> Check if the hero image is compressed, or if text is blocked by external fonts.</li></ul>'
+      });
+    } else if (lcp > 0) {
+      insights.push({ 
+        type: 'good', 
+        title: '<strong>LCP is good (' + Math.round(lcp) + 'ms).</strong> Main content is rendering quickly.',
+        detail: '<ul><li>Target: Under 2500ms</li><li>Your Time: ' + Math.round(lcp) + 'ms</li><li>No action needed for LCP.</li></ul>'
+      });
+    }
+
+    // 2. Failed APIs
+    var failedApis = net.filter(function(r) { 
+      // Exclude 206 (Partial Content) unless it actually failed
+      if (Number(r.status) === 206 && !r.failed) return false;
+      return Number(r.status) >= 400 || r.failed; 
+    });
+    
+    if (failedApis.length > 0) {
+      var failList = failedApis.map(function(r) {
+        // Construct a readable URL path
+        var displayUrl = (r.host || '') + (r.path || '');
+        if (!displayUrl.trim()) displayUrl = r.url || 'Unknown URL';
+        
+        // Truncate extremely long URLs but keep the end
+        if (displayUrl.length > 75) displayUrl = '...' + displayUrl.slice(-75);
+        
+        var statusColor = r.failed ? 'var(--danger)' : (Number(r.status) >= 500 ? 'var(--danger)' : 'var(--warn)');
+        
+        return '<li style="margin-bottom:4px;"><code>' + (r.method || 'GET') + '</code> <strong style="color:' + statusColor + '">' + (r.status || 'ERR') + '</strong> <span style="word-break:break-all;">' + escapeHtml(displayUrl) + '</span></li>';
+      }).join('');
+      
+      insights.push({ 
+        type: 'bad', 
+        title: '<strong>' + failedApis.length + ' failed API requests.</strong> Click to see which endpoints broke.',
+        detail: '<ul>' + failList + '</ul>'
+      });
+    }
+
+    // 3. Console Errors
+    var errors = con.filter(function(c) { return c.level === 'error' || c.level === 'uncaught'; });
+    if (errors.length > 0) {
+      // Check if the errors are mostly from adblockers
+      var blockedCount = errors.filter(function(c) { return c.message && c.message.indexOf('ERR_BLOCKED_BY_CLIENT') !== -1; }).length;
+      
+      var errList = errors.slice(0, 10).map(function(c) {
+      var msg = escapeHtml(c.message);
+        
+        // Try to extract file and line number from the stack trace
+        var locationStr = '';
+        if (c.stack) {
+          // Look for the first file path in the stack trace (e.g., "at http://.../app.js:10:5")
+          var match = c.stack.match(/(https?:\/\/[^\s]+)/g);
+          if (match && match.length > 0) {
+          var fileUrl = match[0];
+             // Shorten the URL for display
+             try { fileUrl = new URL(fileUrl).pathname; } catch(e){}
+             locationStr = '<br><span style="font-size:10px; color:var(--text-muted); font-family:var(--mono);">📍 ' + escapeHtml(fileUrl) + '</span>';
+          }
+        }
+
+        return '<li style="margin-bottom: 6px; word-break:break-word; line-height:1.4;">' + msg + locationStr + '</li>';
+      }).join('');
+      
+      var warningText = '';
+      if (blockedCount > 0) {
+        warningText = '<div style="margin-top:8px; padding:8px; background:rgba(0,0,0,0.05); border-radius:4px; font-family:-apple-system,sans-serif; font-size:11.5px; color:var(--text-muted);"><strong>Note:</strong> ' + blockedCount + ' of these errors are <code>ERR_BLOCKED_BY_CLIENT</code>. This means an AdBlocker or browser extension blocked the script, not your application code.</div>';
+      }
+
+      insights.push({ 
+        type: 'bad', 
+        title: '<strong>' + errors.length + ' Console/JS errors.</strong> Uncaught exceptions can halt execution.',
+        detail: '<ul>' + errList + (errors.length > 10 ? '<li>...and ' + (errors.length - 10) + ' more</li>' : '') + '</ul>' + warningText
+      });
+    }
+
+    // 4. Slow APIs (> 1s)
+    var slowApis = net.filter(function(r) { return r.time > 1000 && Number(r.status) < 400; });
+    if (slowApis.length > 0) {
+      var slowList = slowApis.map(function(r) {
+        var displayUrl = (r.host || '') + (r.path || '');
+        if (!displayUrl.trim()) displayUrl = r.url || 'Unknown URL';
+        if (displayUrl.length > 75) displayUrl = '...' + displayUrl.slice(-75);
+        
+        return '<li style="margin-bottom:4px;"><code>' + Math.round(r.time) + 'ms</code> <span style="word-break:break-all;">' + escapeHtml(displayUrl) + '</span></li>';
+      }).join('');
+      
+      insights.push({ 
+        type: 'warn', 
+        title: '<strong>' + slowApis.length + ' slow API requests (>1s).</strong> Click to see the slowest endpoints.',
+        detail: '<ul>' + slowList + '</ul>'
+      });
+    }
+
+    // 5. Long Tasks
+    if (longTasks.length > 0) {
+      var ltList = longTasks.sort(function(a,b){ return b.duration - a.duration; }).slice(0, 5).map(function(lt) {
+        return '<li><code>' + Math.round(lt.duration) + 'ms</code> blocked on main thread</li>';
+      }).join('');
+      insights.push({ 
+        type: 'warn', 
+        title: '<strong>' + longTasks.length + ' long tasks detected.</strong> The main thread was blocked.',
+        detail: '<ul>' + ltList + '</ul>'
+      });
+    }
+
+    if (insights.length === 0) {
+      insights.push({ 
+        type: 'good', 
+        title: '<strong>No major issues detected.</strong> The application is performing well.',
+        detail: '<ul><li>All metrics are within acceptable thresholds.</li></ul>'
+      });
+    }
+
+    var h = '<div class="panel" style="border-left:4px solid var(--brand)">' +
+      '<div class="section-title" style="color:var(--brand)">Actionable Insights — click to view details</div>' +
+      '<div class="insight-list" id="insightsList">';
+      
+    insights.forEach(function(i, idx) {
+      var icon = i.type === 'bad' ? '⚠️' : i.type === 'warn' ? '🟡' : '✅';
+      h += '<div class="insight-item ' + i.type + '">' +
+           '<div class="insight-header">' +
+             '<div class="insight-icon">' + icon + '</div>' +
+             '<div class="insight-text">' + i.title + '</div>' +
+             '<div class="insight-chev">▶</div>' +
+           '</div>' +
+           '<div class="insight-detail">' + i.detail + '</div>' +
+           '</div>';
+    });
+    
+    h += '</div></div>';
+    return h;
+  }
   function buildExecutiveSummary(report) {
     var net = report.network || [];
     if (!net.length) return '';
@@ -653,6 +961,76 @@
     return h;
   }
 
+  function buildFPSCardHTML(report) {
+    return '<div class="panel" id="fpsPanel">' +
+      '<div class="section-title">Frame Rate (FPS) — click any card to see the timeline</div>' +
+      '<div class="fps-grid" id="fpsGrid"></div>' +
+      '<div class="fps-detail" id="fpsDetail"></div>' +
+    '</div>';
+  }
+
+  function buildRenderingMetricsHTML(report) {
+    var rm = report.renderingMetrics || {};
+    if (rm.realINP == null && rm.fcp == null && rm.domInteractive == null) return ''; 
+
+    return '<div class="panel" id="renderPanel">' +
+      '<div class="section-title">Rendering & Interaction Timings — click any card for details</div>' +
+      '<div class="render-grid" id="renderGrid"></div>' +
+      '<div class="render-detail-panel" id="renderDetail"></div>' +
+    '</div>';
+  }
+
+  function buildBaselineHTML(report) {
+    if (!report.baseline) return '';
+    return '<div class="panel" id="baselinePanel">' +
+      '<div class="section-title">Baseline Comparison — changes since previous session</div>' +
+      '<div class="base-grid" id="baseGrid"></div>' +
+      '<div class="base-detail" id="baseDetail"></div>' +
+    '</div>';
+  }
+
+    function buildCustomMarksHTML(report) {
+    return '<div class="panel" id="marksPanel">' +
+      '<div class="section-title" id="marksHeader" style="cursor:pointer; user-select:none;">' +
+        '<span class="chev" id="marksChev" style="font-size:10px; color:var(--text-muted); transition:transform .15s; margin-right:6px;">▶</span>' +
+        'Custom Performance Marks — click to expand' +
+      '</div>' +
+      '<div class="list-grid" id="marksGrid" style="display:none; margin-top:12px;"></div>' +
+    '</div>';
+  }
+
+  function buildResourceTimingHTML(report) {
+    return '<div class="panel" id="resourcePanel">' +
+      '<div class="section-title">Critical Rendering Path — render-blocking CSS/JS</div>' +
+      '<div class="list-grid" id="resourcesGrid"></div>' +
+    '</div>';
+  }
+
+  function buildCompareHTML(report) {
+    return '<div class="panel" id="comparePanel">' +
+      '<div class="section-title">Compare with Client Report</div>' +
+      '<div id="compareUploadArea">' +
+        '<div class="upload-zone" id="uploadZone">' +
+          '<p><strong>Click to upload</strong> or drag and drop</p>' +
+          '<span>Supports .har, .json, or generated .html reports</span>' +
+          '<input type="file" id="fileInput" class="upload-input" accept=".har,.json,.html" />' +
+        '</div>' +
+      '</div>' +
+      '<div id="compareResults" style="display:none;margin-top:16px"></div>' +
+    '</div>';
+  }
+  
+    function buildMemoryChartHTML(report) {
+    var mem = report.memory || [];
+    if (!mem.length) return ''; // Don't show if no data
+
+    return '<div class="panel" id="memPanel">' +
+      '<div class="section-title">Memory & DOM Growth — checking for leaks</div>' +
+      '<div style="font-size:12px;color:var(--text-mid);margin-bottom:8px">If the line goes up and never comes down, you have a memory leak.</div>' +
+      '<div class="mem-chart-wrap" id="memChartContainer"></div>' +
+    '</div>';
+  }
+
   function buildRiskGridHTML(health) {
     if (!health || !Array.isArray(health.factors) || !health.factors.length) return '';
     var h = '<div class="section-title" style="margin-top:20px">Risk Factors — click a card to drill down</div><div class="risk-grid">';
@@ -670,6 +1048,118 @@
       '<div class="risk-drill" id="riskDrill"><h3><span id="riskDrillTitle">—</span>' +
       '<button class="close" id="riskDrillClose">Close</button></h3><div id="riskDrillBody"></div></div>';
     return h;
+  }
+    
+   function buildAPILeaderboardHTML(report) {
+    var net = report.network || [];
+    
+    var apiRequests = net.filter(function(r) {
+       var t = (r.type || '').toLowerCase();
+       var m = (r.method || 'GET').toUpperCase();
+       return t === 'fetch' || t === 'xhr' || 
+              (r.mimeType && r.mimeType.indexOf('json') !== -1) ||
+              m === 'POST' || m === 'PUT' || m === 'DELETE' || m === 'PATCH' ||
+              (r.url && r.url.indexOf('/api/') !== -1);
+    });
+
+    if (!apiRequests.length) {
+      return '<div class="panel" id="apiLeaderboardPanel">' +
+        '<div class="section-title">API Performance Leaderboard</div>' +
+        '<div style="padding:16px;color:var(--text-muted);text-align:center;font-style:italic">No API or XHR/Fetch requests were captured in this recording.</div>' +
+      '</div>';
+    }
+
+    var groups = {};
+    
+    apiRequests.forEach(function(r) {
+      var urlStr = (r.host || '') + (r.path || '');
+      if (!urlStr.trim()) urlStr = r.url || 'unknown';
+
+      var norm = urlStr.split('?')[0]
+        .replace(/\/\d+(?=\/|\?|$)/g, '/:id')
+        .replace(/\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=\/|\?|$)/g, '/:uuid')
+        .replace(/\/$/, '');
+
+      var method = (r.method || 'GET').toUpperCase();
+      if (method === 'OPTIONS') return;
+
+      var key = method + ' ' + norm;
+
+      if (!groups[key]) {
+        groups[key] = { url: norm, method: method, calls: 0, totalTime: 0, maxTime: 0, failures: 0 };
+      }
+      
+      var g = groups[key];
+      g.calls++;
+      var t = r.time || 0;
+      g.totalTime += t;
+      g.maxTime = Math.max(g.maxTime, t);
+      if (Number(r.status) >= 400 || r.failed) g.failures++;
+    });
+
+    var list = Object.keys(groups).map(function(k) {
+      var g = groups[k];
+      g.avgTime = g.totalTime / g.calls;
+      g.failRate = Math.round((g.failures / g.calls) * 100);
+      return g;
+    });
+
+    list.sort(function(a, b) { return b.avgTime - a.avgTime; });
+    
+    var rowsHtml = list.map(function(g) {
+      var avgCls = g.avgTime > 1000 ? 'time-bad' : g.avgTime > 500 ? 'time-warn' : '';
+      var failCls = g.failRate > 0 ? 'fail-bad' : '';
+      var mCls = g.method === 'GET' ? 'background:#e0e7ff;color:#3730a3' : 
+                 g.method === 'POST' ? 'background:#fef3c7;color:#92400e' : 
+                 g.method === 'PUT' || g.method === 'PATCH' ? 'background:#ede9fe;color:#6d28d9' : 
+                 'background:#fee2e2;color:#b3261e';
+      
+      var searchTerm = g.url.replace(/\/:id|\/:uuid/g, '');
+      
+      // Truncate massive Base64 strings for display only
+      var displayUrl = g.url;
+      if (displayUrl.length > 100) {
+        displayUrl = displayUrl.substring(0, 100) + '... [Truncated]';
+      }
+
+      return '<tr data-search="' + escapeHtml(searchTerm) + '" style="cursor:pointer" title="Click to filter Network tab">' +
+        '<td><span class="pill method" style="' + mCls + '">' + g.method + '</span></td>' +
+        '<td class="endpoint">' + escapeHtml(displayUrl) + '</td>' +
+        '<td style="text-align:right">' + g.calls + '</td>' +
+        '<td style="text-align:right" class="' + avgCls + '">' + Math.round(g.avgTime) + ' ms</td>' +
+        '<td style="text-align:right">' + Math.round(g.maxTime) + ' ms</td>' +
+        '<td style="text-align:right" class="' + failCls + '">' + (g.failures > 0 ? g.failures + ' (' + g.failRate + '%)' : '0') + '</td>' +
+      '</tr>';
+    }).join('');
+
+    var jsonData = JSON.stringify(list).replace(/</g, '\\u003c');
+
+    // Added collapsible header and container
+    return '<div class="panel" id="apiLeaderboardPanel">' +
+      '<script id="api-data" type="application/json">' + jsonData + '</script>' +
+      '<div class="section-title" id="apiLeadHeader" style="cursor:pointer; user-select:none;">' +
+        '<span class="chev" id="apiLeadChev" style="font-size:10px; color:var(--text-muted); transition:transform .15s; margin-right:6px;">▶</span>' +
+        'API Performance Leaderboard — click to expand' +
+      '</div>' +
+      '<div id="apiLeadContainer" style="display:none; margin-top:12px;">' +
+      '<table class="api-leaderboard-table" id="apiLeadTable"><thead><tr>' +
+        '<th style="cursor:pointer" data-sort="method">Method ↕</th>' +
+        '<th style="cursor:pointer" data-sort="url">Endpoint ↕</th>' +
+        '<th style="text-align:right;cursor:pointer" data-sort="calls">Calls ↕</th>' +
+        '<th style="text-align:right;cursor:pointer" data-sort="avgTime">Avg Time ↕</th>' +
+        '<th style="text-align:right;cursor:pointer" data-sort="maxTime">Max Time ↕</th>' +
+        '<th style="text-align:right;cursor:pointer" data-sort="failures">Failures ↕</th>' +
+      '</tr></thead><tbody id="apiLeadBody">' + rowsHtml + '</tbody></table></div></div>';
+  }
+
+    function buildNavigationGroupsHTML(report) {
+    return '<div class="panel" id="navPanel">' +
+      '<div class="section-title" id="navHeader" style="cursor:pointer; user-select:none;">' +
+        '<span class="chev" id="navChev" style="font-size:10px; color:var(--text-muted); transition:transform .15s; margin-right:6px;">▶</span>' +
+        'Navigation Segments — click to expand' +
+      '</div>' +
+      '<div class="nav-grid" id="navGroups" style="display:none; margin-top:12px;"></div>' +
+    '</div>';
   }
 
   function buildTabsHTML(report) {
@@ -742,6 +1232,21 @@
     var SCREENSHOTS = payload.screenshots || [];
     var CONSOLE     = payload.console    || [];
     var RISK_DATA   = payload.riskData   || {};
+    var ACTIONS     = payload.actions    || [];
+    var FPS         = payload.fps        || [];
+    var LONG_TASKS  = payload.longTasks  || [];
+    var NAV_GROUPS  = payload.navigationGroups || [];
+    var RENDERING_METRICS = payload.renderingMetrics || {};
+    var BASELINE    = payload.baseline   || null;
+    var CUSTOM_MARKS = payload.customMarks || [];
+    var RESOURCES   = payload.resources  || [];
+
+    function formatDuration(ms) {
+      if (ms == null || isNaN(ms) || ms <= 0) return '—';
+      if (ms < 1000)  return Math.round(ms) + ' ms';
+      if (ms < 60000) return (ms / 1000).toFixed(2) + ' s';
+      return (ms / 60000).toFixed(2) + ' min';
+    }
 
     var TIMING_COLORS = { dns:'#94a3b8', connect:'#60a5fa', ssl:'#a78bfa', send:'#fcd34d', wait:'#fb923c', receive:'#22c55e' };
 
@@ -825,9 +1330,20 @@
       });
     }
 
-    function applyFilters() {
+        function applyFilters() {
       var out = DATA.slice();
-      if (state.search) { var q = state.search.toLowerCase(); out = out.filter(function (r) { return (r.host + r.path + r.method + r.status).toLowerCase().indexOf(q) !== -1; }); }
+      if (state.search) { 
+        // NEW: Strip protocol and query strings from search, and strip :id/:uuid
+        var q = state.search.toLowerCase()
+          .replace(/^https?:\/\//, '')
+          .split('?')[0]
+          .replace(/\/:id|\/:uuid/g, '');
+
+        out = out.filter(function (r) { 
+          var searchable = ((r.host || '') + (r.path || '')).toLowerCase();
+          return searchable.indexOf(q) !== -1; 
+        }); 
+      }
       if (state.method) out = out.filter(function (r) { return r.method === state.method; });
       if (state.type)   out = out.filter(function (r) { return r.type   === state.type;   });
       if (state.status) out = out.filter(function (r) {
@@ -1139,6 +1655,727 @@
       if (riskClose) riskClose.addEventListener('click', function () { document.getElementById('riskDrill').classList.remove('open'); });
     }
 
+    function renderFPS(fpsSamples) {
+      var grid = document.getElementById('fpsGrid');
+      var detail = document.getElementById('fpsDetail');
+      var panel = document.getElementById('fpsPanel');
+      if (!grid || !detail) return;
+      if (!fpsSamples || !fpsSamples.length) {
+        if (panel) panel.style.display = 'none';
+        return;
+      }
+      var values = fpsSamples.map(function (s) { return s.fps; }).filter(function (v) { return typeof v === 'number'; });
+      if (!values.length) { if (panel) panel.style.display = 'none'; return; }
+
+      var sum = values.reduce(function (a, b) { return a + b; }, 0);
+      var avg = Math.round(sum / values.length);
+      var min = Math.min.apply(null, values);
+      var max = Math.max.apply(null, values);
+      function cls(v) { return v >= 50 ? 'good' : v >= 30 ? 'warn' : 'bad'; }
+
+      grid.innerHTML =
+        '<div class="fps-stat ' + cls(avg) + '" data-fps-metric="avg"><div class="fl"><span>Average FPS</span><span class="chev">▶</span></div><div class="fv">' + avg + '</div><div class="fs">' + values.length + ' samples</div></div>' +
+        '<div class="fps-stat ' + cls(min) + '" data-fps-metric="min"><div class="fl"><span>Min FPS</span><span class="chev">▶</span></div><div class="fv">' + min + '</div><div class="fs">worst second</div></div>' +
+        '<div class="fps-stat ' + cls(max) + '" data-fps-metric="max"><div class="fl"><span>Max FPS</span><span class="chev">▶</span></div><div class="fv">' + max + '</div><div class="fs">best second</div></div>' +
+        '<div class="fps-stat ' + cls(avg) + '" data-fps-metric="samples"><div class="fl"><span>Samples</span><span class="chev">▶</span></div><div class="fv">' + values.length + '</div><div class="fs">1 per second</div></div>';
+
+      function renderRow(s) {
+        var pct = Math.min(100, (s.fps / 60) * 100);
+        var c = s.fps >= 50 ? '#16a34a' : s.fps >= 30 ? '#ea580c' : '#dc2626';
+        var t = s.relativeMs != null ? ('+' + (s.relativeMs / 1000).toFixed(1) + ' s') : new Date(s.epoch || Date.now()).toLocaleTimeString();
+        return '<div class="fps-row"><span class="fps-row-time">' + esc(t) + '</span>' +
+          '<div class="fps-row-bar"><div class="fps-row-fill" style="width:' + pct + '%;background:' + c + '"></div></div>' +
+          '<span class="fps-row-val" style="color:' + c + '">' + s.fps + ' fps</span></div>';
+      }
+
+      var displaySamples = fpsSamples.slice(-200);
+      var truncated = fpsSamples.length > 200;
+      var timelineHTML = displaySamples.map(renderRow).join('') + (truncated ? '<div class="fps-trunc">Showing last 200 samples of ' + fpsSamples.length + '.</div>' : '');
+
+      var sortedAsc = fpsSamples.slice().sort(function(a, b) { return a.fps - b.fps; });
+      var worst5 = sortedAsc.slice(0, 5);
+      var best5 = sortedAsc.slice(-5).reverse();
+
+      var minHTML = '<h4 style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;margin-bottom:8px">5 Worst FPS Seconds</h4>' +
+        worst5.map(renderRow).join('') +
+        '<p style="font-size:11.5px;color:var(--text-mid);margin-top:12px;line-height:1.6">These are the moments where the browser struggled most to maintain 60 frames per second. Drops usually coincide with long JavaScript tasks or heavy layout recalculations.</p>';
+
+      var maxHTML = '<h4 style="font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;margin-bottom:8px">5 Best FPS Seconds</h4>' +
+        best5.map(renderRow).join('') +
+        '<p style="font-size:11.5px;color:var(--text-mid);margin-top:12px;line-height:1.6">These are the moments of peak smoothness, usually when the page is idle or animations are running without competing main-thread work.</p>';
+
+      var idealCount = values.filter(function(v) { return v >= 55; }).length;
+      var okayCount = values.filter(function(v) { return v >= 30 && v < 55; }).length;
+      var badCount = values.filter(function(v) { return v < 30; }).length;
+
+      var samplesHTML = '<div class="render-grid-inner" style="grid-template-columns:1fr">' +
+        '<div class="render-block">' +
+          '<h4>FPS Distribution Breakdown</h4>' +
+          '<div class="render-row"><span class="rk">Total Samples</span><span class="rv">' + values.length + '</span></div>' +
+          '<div class="render-row"><span class="rk">Smooth (55+ fps)</span><span class="rv" style="color:#16a34a">' + idealCount + ' seconds</span></div>' +
+          '<div class="render-row"><span class="rk">Okay (30 - 54 fps)</span><span class="rv" style="color:#ea580c">' + okayCount + ' seconds</span></div>' +
+          '<div class="render-row"><span class="rk">Janky (&lt; 30 fps)</span><span class="rv" style="color:#dc2626">' + badCount + ' seconds</span></div>' +
+        '</div>' +
+        '<div class="render-block">' +
+          '<h4>What do these numbers mean?</h4>' +
+          '<p style="font-size:11.5px;color:var(--text-mid);line-height:1.6;margin:0">' +
+          'The sampling runs once per second and counts how many frames the browser rendered. 60 fps is the target for standard displays. ' +
+          'Anything below 30 fps is highly noticeable to users as stuttering or "jank". ' +
+          'This data helps you identify if performance degradation is constant or localized to specific interactions.</p>' +
+        '</div>' +
+      '</div>';
+
+      var details = {
+        avg: '<div class="render-grid-inner" style="grid-template-columns:1fr"><div class="render-block">' +
+             '<h4>Full Timeline (Last 200 Samples)</h4>' + timelineHTML + '</div></div>',
+        min: '<div class="render-grid-inner" style="grid-template-columns:1fr"><div class="render-block">' + minHTML + '</div></div>',
+        max: '<div class="render-grid-inner" style="grid-template-columns:1fr"><div class="render-block">' + maxHTML + '</div></div>',
+        samples: samplesHTML
+      };
+
+      Array.prototype.forEach.call(grid.querySelectorAll('.fps-stat'), function (el) {
+        el.addEventListener('click', function () {
+          var was = el.classList.contains('open');
+          
+          Array.prototype.forEach.call(grid.querySelectorAll('.fps-stat.open'), function (x) { x.classList.remove('open'); });
+          detail.classList.remove('open');
+          
+          if (!was) {
+            el.classList.add('open');
+            var metric = el.dataset.fpsMetric;
+            detail.innerHTML = details[metric] || '';
+            detail.classList.add('open');
+          }
+        });
+      });
+    }
+
+    function renderRenderingMetrics(rm) {
+      var grid = document.getElementById('renderGrid');
+      var detail = document.getElementById('renderDetail');
+      var panel = document.getElementById('renderPanel');
+      if (!grid || !detail || !panel) return;
+
+      function getCls(val, good, warn) {
+        if (val == null) return '';
+        if (val <= good) return 'good';
+        if (val <= warn) return 'warn';
+        return 'bad';
+      }
+
+      var inpCls = getCls(rm.realINP, 200, 500);
+      var fcpCls = getCls(rm.fcp, 1800, 3000);
+      var loadCls = getCls(rm.loadComplete, 2500, 4000);
+
+      grid.innerHTML =
+        '<div class="render-card ' + inpCls + '" data-metric="inp">' +
+          '<div class="rl"><span>Real INP (P98)</span><span class="chev">▶</span></div>' +
+          '<div class="rv">' + (rm.realINP != null ? Math.round(rm.realINP) + ' ms' : '—') + '</div>' +
+          '<div class="rs">Interaction to Next Paint</div>' +
+        '</div>' +
+        '<div class="render-card ' + fcpCls + '" data-metric="fcp">' +
+          '<div class="rl"><span>FCP (First Contentful Paint)</span><span class="chev">▶</span></div>' +
+          '<div class="rv">' + (rm.fcp != null ? Math.round(rm.fcp) + ' ms' : '—') + '</div>' +
+          '<div class="rs">First paint of text/image</div>' +
+        '</div>' +
+        '<div class="render-card" data-metric="dom">' +
+          '<div class="rl"><span>DOM Interactive</span><span class="chev">▶</span></div>' +
+          '<div class="rv">' + (rm.domInteractive != null ? Math.round(rm.domInteractive) + ' ms' : '—') + '</div>' +
+          '<div class="rs">HTML parsed</div>' +
+        '</div>' +
+        '<div class="render-card ' + loadCls + '" data-metric="load">' +
+          '<div class="rl"><span>Load Event</span><span class="chev">▶</span></div>' +
+          '<div class="rv">' + (rm.loadComplete != null ? Math.round(rm.loadComplete) + ' ms' : '—') + '</div>' +
+          '<div class="rs">All resources loaded</div>' +
+        '</div>';
+
+      var details = {
+        inp: '<div class="render-grid-inner"><div class="render-block">' +
+          '<h4>Interaction to Next Paint (P98)</h4>' +
+          '<div class="render-row"><span class="rk">P98 INP Value</span><span class="rv">' + (rm.realINP != null ? Math.round(rm.realINP) + ' ms' : '—') + '</span></div>' +
+          '<div class="render-row"><span class="rk">Total Interactions Captured</span><span class="rv">' + (rm.inpEvents ? rm.inpEvents.length : 0) + '</span></div>' +
+          '</div><div class="render-block">' +
+          '<h4>Top Interactions</h4>' +
+          (rm.inpEvents && rm.inpEvents.length ? '<div class="render-el-list">' + rm.inpEvents.slice().sort(function(a,b) { return b.duration - a.duration; }).slice(0, 10).map(function(ev) {
+            return '<div class="render-el-item"><span style="color:var(--brand)">' + esc(ev.name) + '</span><span style="font-family:var(--mono)">' + Math.round(ev.duration) + ' ms</span></div>';
+          }).join('') + '</div>' : '<div style="font-size:11.5px;color:var(--text-muted);font-style:italic;padding:8px 0">No interactions recorded.</div>') +
+          '</div></div>',
+
+        fcp: '<div class="render-grid-inner"><div class="render-block">' +
+          '<h4>Paint Timings</h4>' +
+          '<div class="render-row"><span class="rk">First Paint (FP)</span><span class="rv">' + (rm.fp != null ? Math.round(rm.fp) + ' ms' : '—') + '</span></div>' +
+          '<div class="render-row"><span class="rk">First Contentful Paint (FCP)</span><span class="rv">' + (rm.fcp != null ? Math.round(rm.fcp) + ' ms' : '—') + '</span></div>' +
+          '</div><div class="render-block">' +
+          '<h4>Element Render Timings (' + (rm.elements || []).length + ')</h4>' +
+          (rm.elements && rm.elements.length ? '<div class="render-el-list">' + rm.elements.map(function (el) {
+            return '<div class="render-el-item"><span style="color:var(--brand);font-weight:600">' + esc(el.id) + ' <span style="color:var(--text-muted);font-weight:400">(' + esc(el.tag) + ')</span></span><span style="font-family:var(--mono)">' + Math.round(el.renderTime) + ' ms</span></div>';
+          }).join('') + '</div>' : '<div style="font-size:11.5px;color:var(--text-muted);font-style:italic;padding:8px 0">No elements found with the <code style="background:#e2e8f0;padding:1px 4px;border-radius:4px">elementtiming</code> attribute. Add this HTML attribute to track hero images or charts.</div>') +
+          '</div></div>',
+
+        dom: '<div class="render-grid-inner"><div class="render-block">' +
+          '<h4>DOM Parsing Timelines</h4>' +
+          '<div class="render-row"><span class="rk">DOM Interactive</span><span class="rv">' + (rm.domInteractive != null ? Math.round(rm.domInteractive) + ' ms' : '—') + '</span></div>' +
+          '<div class="render-row"><span class="rk">DOM Content Loaded</span><span class="rv">' + (rm.domContentLoaded != null ? Math.round(rm.domContentLoaded) + ' ms' : '—') + '</span></div>' +
+          '<div class="render-row"><span class="rk">Load Complete</span><span class="rv">' + (rm.loadComplete != null ? Math.round(rm.loadComplete) + ' ms' : '—') + '</span></div>' +
+          '</div><div class="render-block">' +
+          '<h4>Explanation</h4><p style="font-size:11.5px;color:var(--text-mid);line-height:1.6;margin:0">DOM Interactive fires when the HTML has finished parsing and the DOM is fully constructed, without waiting for stylesheets, images, and subframes to finish loading. DOM Content Loaded fires shortly after, when all deferred scripts have executed.</p>' +
+          '</div></div>',
+
+        load: '<div class="render-grid-inner"><div class="render-block">' +
+          '<h4>Page Load Timelines</h4>' +
+          '<div class="render-row"><span class="rk">Load Complete</span><span class="rv">' + (rm.loadComplete != null ? Math.round(rm.loadComplete) + ' ms' : '—') + '</span></div>' +
+          '<div class="render-row"><span class="rk">DOM Content Loaded</span><span class="rv">' + (rm.domContentLoaded != null ? Math.round(rm.domContentLoaded) + ' ms' : '—') + '</span></div>' +
+          '</div><div class="render-block">' +
+          '<h4>Explanation</h4><p style="font-size:11.5px;color:var(--text-mid);line-height:1.6;margin:0">The Load event fires when the whole page has loaded, including all dependent resources such as stylesheets, scripts, iframes, and images. This is the final event in the page loading process.</p>' +
+          '</div></div>'
+      };
+
+      Array.prototype.forEach.call(grid.querySelectorAll('.render-card'), function (card) {
+        card.addEventListener('click', function () {
+          var was = card.classList.contains('open');
+          var metric = card.dataset.metric;
+          
+          Array.prototype.forEach.call(grid.querySelectorAll('.render-card.open'), function (x) { x.classList.remove('open'); });
+          detail.classList.remove('open');
+          
+          if (!was) {
+            card.classList.add('open');
+            detail.innerHTML = details[metric] || '';
+            detail.classList.add('open');
+          }
+        });
+      });
+    }
+
+    function renderBaseline(base) {
+      if (!base) return;
+      var grid = document.getElementById('baseGrid');
+      var detail = document.getElementById('baseDetail');
+      if (!grid || !detail) return;
+
+      function calcDelta(curr, prev, lowerIsBetter) {
+        if (prev === 0) return { pct: 0, dir: 'same', cls: '' };
+        var diff = curr - prev;
+        var pct = Math.round((diff / prev) * 100);
+        var dir = diff === 0 ? 'same' : diff > 0 ? 'up' : 'down';
+        var cls = 'good';
+        if (lowerIsBetter) {
+          if (diff > 0) cls = 'bad';
+          else if (diff < 0) cls = 'good';
+          else cls = '';
+        } else {
+          if (diff > 0) cls = 'good';
+          else if (diff < 0) cls = 'bad';
+          else cls = '';
+        }
+        return { pct: Math.abs(pct), dir: dir, cls: cls };
+      }
+
+      var lcpD = calcDelta(base.curr.lcp, base.prev.lcp, true);
+      var reqD = calcDelta(base.curr.requests, base.prev.requests, false);
+      var errD = calcDelta(base.curr.errors, base.prev.errors, true);
+      var sizeD = calcDelta(base.curr.size, base.prev.size, true);
+
+      function arrow(d) { return d.dir === 'up' ? '↑' : d.dir === 'down' ? '↓' : '—'; }
+      function fmtPct(d) { return d.dir === 'same' ? '0%' : d.pct + '%'; }
+
+      grid.innerHTML =
+        '<div class="base-card ' + lcpD.cls + '" data-metric="lcp">' +
+          '<div class="fl"><span>LCP</span><span class="chev">▶</span></div>' +
+          '<div class="fv">' + fmtTime(base.curr.lcp) + ' <span style="font-size:14px;color:' + (lcpD.cls === 'good' ? '#16a34a' : lcpD.cls === 'bad' ? '#dc2626' : 'inherit') + '">' + arrow(lcpD) + ' ' + fmtPct(lcpD) + '</span></div>' +
+          '<div class="fs">vs ' + fmtTime(base.prev.lcp) + '</div>' +
+        '</div>' +
+        '<div class="base-card ' + reqD.cls + '" data-metric="req">' +
+          '<div class="fl"><span>Requests</span><span class="chev">▶</span></div>' +
+          '<div class="fv">' + base.curr.requests + ' <span style="font-size:14px;color:' + (reqD.cls === 'good' ? '#16a34a' : reqD.cls === 'bad' ? '#dc2626' : 'inherit') + '">' + arrow(reqD) + ' ' + fmtPct(reqD) + '</span></div>' +
+          '<div class="fs">vs ' + base.prev.requests + '</div>' +
+        '</div>' +
+        '<div class="base-card ' + errD.cls + '" data-metric="err">' +
+          '<div class="fl"><span>Errors</span><span class="chev">▶</span></div>' +
+          '<div class="fv">' + base.curr.errors + ' <span style="font-size:14px;color:' + (errD.cls === 'good' ? '#16a34a' : errD.cls === 'bad' ? '#dc2626' : 'inherit') + '">' + arrow(errD) + ' ' + fmtPct(errD) + '</span></div>' +
+          '<div class="fs">vs ' + base.prev.errors + '</div>' +
+        '</div>' +
+        '<div class="base-card ' + sizeD.cls + '" data-metric="size">' +
+          '<div class="fl"><span>Transfer Size</span><span class="chev">▶</span></div>' +
+          '<div class="fv">' + fmtSize(base.curr.size) + ' <span style="font-size:14px;color:' + (sizeD.cls === 'good' ? '#16a34a' : sizeD.cls === 'bad' ? '#dc2626' : 'inherit') + '">' + arrow(sizeD) + ' ' + fmtPct(sizeD) + '</span></div>' +
+          '<div class="fs">vs ' + fmtSize(base.prev.size) + '</div>' +
+        '</div>';
+
+      var details = {
+        lcp: '<div class="render-block"><h4>Largest Contentful Paint (LCP)</h4><div class="render-row"><span class="rk">Current Session</span><span class="rv">' + fmtTime(base.curr.lcp) + '</span></div><div class="render-row"><span class="rk">Previous Session</span><span class="rv">' + fmtTime(base.prev.lcp) + '</span></div><p style="font-size:11.5px;color:var(--text-mid);margin-top:12px">LCP measures when the largest text or image element becomes visible. Lower is better. Target is under 2.5 seconds.</p></div>',
+        req: '<div class="render-block"><h4>Total Requests</h4><div class="render-row"><span class="rk">Current Session</span><span class="rv">' + base.curr.requests + '</span></div><div class="render-row"><span class="rk">Previous Session</span><span class="rv">' + base.prev.requests + '</span></div><p style="font-size:11.5px;color:var(--text-mid);margin-top:12px">Fewer requests generally indicate a leaner, faster page load. Check the Network tab for details on which requests are being made.</p></div>',
+        err: '<div class="render-block"><h4>Console & Network Errors</h4><div class="render-row"><span class="rk">Current Session</span><span class="rv">' + base.curr.errors + '</span></div><div class="render-row"><span class="rk">Previous Session</span><span class="rv">' + base.prev.errors + '</span></div><p style="font-size:11.5px;color:var(--text-mid);margin-top:12px">Includes uncaught JavaScript exceptions and HTTP 4xx/5xx network responses. Zero errors is the target.</p></div>',
+        size: '<div class="render-block"><h4>Total Transfer Size</h4><div class="render-row"><span class="rk">Current Session</span><span class="rv">' + fmtSize(base.curr.size) + '</span></div><div class="render-row"><span class="rk">Previous Session</span><span class="rv">' + fmtSize(base.prev.size) + '</span></div><p style="font-size:11.5px;color:var(--text-mid);margin-top:12px">The total amount of data downloaded over the network. Reducing image sizes and leveraging caching can decrease this footprint.</p></div>'
+      };
+
+      Array.prototype.forEach.call(grid.querySelectorAll('.base-card'), function (card) {
+        card.addEventListener('click', function () {
+          var was = card.classList.contains('open');
+          
+          Array.prototype.forEach.call(grid.querySelectorAll('.base-card.open'), function (x) { x.classList.remove('open'); });
+          detail.classList.remove('open');
+          
+          if (!was) {
+            card.classList.add('open');
+            detail.innerHTML = details[card.dataset.metric] || '';
+            detail.classList.add('open');
+          }
+        });
+      });
+    }
+    
+        function renderMemoryChart() {
+      var mem = payload.memory || [];
+      var container = document.getElementById('memChartContainer');
+      if (!container || mem.length < 2) return;
+
+      var width = 800;
+      var height = 200;
+      var padLeft = 50;
+      var padBottom = 30;
+      var padTop = 10;
+      var padRight = 10;
+
+      var maxTime = mem[mem.length - 1].relativeMs || 1;
+      var maxHeap = 0;
+      mem.forEach(function(m) { if (m.jsHeapUsed > maxHeap) maxHeap = m.jsHeapUsed; });
+      
+      maxHeap = maxHeap / 1048576; // to MB
+      if (maxHeap < 10) maxHeap = 10; // minimum scale
+
+      function getX(t) { return padLeft + (t / maxTime) * (width - padLeft - padRight); }
+      function getY(v) { 
+        var mb = v / 1048576;
+        return height - padBottom - (mb / maxHeap) * (height - padTop - padBottom); 
+      }
+
+      var points = mem.map(function(m) {
+        return getX(m.relativeMs) + ',' + getY(m.jsHeapUsed);
+      }).join(' ');
+
+      var areaPoints = getX(mem[0].relativeMs) + ',' + (height - padBottom) + ' ' + 
+                       points + ' ' + 
+                       getX(mem[mem.length - 1].relativeMs) + ',' + (height - padBottom);
+
+      var svg = '<svg class="mem-chart-svg" viewBox="0 0 ' + width + ' ' + height + '">';
+      
+      // Grid lines and Y-axis labels
+      for (var i = 0; i <= 4; i++) {
+        var y = padTop + (i * (height - padTop - padBottom) / 4);
+        var val = maxHeap - (i * maxHeap / 4);
+        svg += '<line x1="' + padLeft + '" y1="' + y + '" x2="' + (width - padRight) + '" y2="' + y + '" class="mem-chart-axis" />';
+        svg += '<text x="' + (padLeft - 8) + '" y="' + (y + 3) + '" text-anchor="end" class="mem-chart-label">' + Math.round(val) + ' MB</text>';
+      }
+
+      // X-axis labels
+      svg += '<text x="' + padLeft + '" y="' + (height - 8) + '" text-anchor="start" class="mem-chart-label">0s</text>';
+      svg += '<text x="' + (width - padRight) + '" y="' + (height - 8) + '" text-anchor="end" class="mem-chart-label">' + (maxTime/1000).toFixed(1) + 's</text>';
+
+      // Draw Area & Line
+      svg += '<polygon class="mem-chart-area" points="' + areaPoints + '" />';
+      svg += '<polyline class="mem-chart-line" points="' + points + '" />';
+
+      // Draw Dots
+      mem.forEach(function(m) {
+        var x = getX(m.relativeMs);
+        var y = getY(m.jsHeapUsed);
+        var timeStr = (m.relativeMs / 1000).toFixed(1) + 's';
+        var mbStr = (m.jsHeapUsed / 1048576).toFixed(1) + ' MB';
+        var nodesStr = (m.nodes || 0).toLocaleString();
+        
+        svg += '<circle cx="' + x + '" cy="' + y + '" r="3" class="mem-chart-dot" ' +
+               'data-time="' + timeStr + '" data-mb="' + mbStr + '" data-nodes="' + nodesStr + '"></circle>';
+      });
+
+      svg += '</svg>';
+      container.innerHTML = svg;
+
+      // Attach Tooltips
+      Array.prototype.forEach.call(container.querySelectorAll('.mem-chart-dot'), function(dot) {
+        dot.addEventListener('mouseenter', function(e) {
+          var t = this.getAttribute('data-time');
+          var mb = this.getAttribute('data-mb');
+          var nd = this.getAttribute('data-nodes');
+          var html = '<div class="tlbl">Memory Snapshot</div>' +
+                     '<div class="tval">' + mb + '</div>' +
+                     '<div class="tctx">Time: ' + t + '<br>DOM Nodes: ' + nd + '</div>';
+          showTip(html, e);
+        });
+        dot.addEventListener('mousemove', function(e) { positionTip(e); });
+        dot.addEventListener('mouseleave', hideTip);
+      });
+    }
+
+    function renderCustomMarks(marks) {
+      var container = document.getElementById('marksGrid');
+      var header = document.getElementById('marksHeader');
+      var chev = document.getElementById('marksChev');
+      if (!container || !header) return;
+
+      // 1. Setup the Expand/Collapse toggle for the whole section
+      if (header.dataset.bound !== '1') {
+        header.dataset.bound = '1';
+        header.addEventListener('click', function() {
+          var isOpen = container.style.display === 'block';
+          container.style.display = isOpen ? 'none' : 'block';
+          
+          // Update the arrow icon if it exists
+          var currentChev = document.getElementById('marksChev');
+          if (currentChev) {
+            currentChev.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+          }
+        });
+      }
+
+      // 2. Render the list
+      if (!marks || !marks.length) {
+        container.innerHTML = '<div style="padding:16px;color:var(--text-muted);text-align:center;font-style:italic">No custom marks recorded. Add `performance.mark("my-mark")` to your code to track custom timings.</div>';
+        return;
+      }
+
+      container.innerHTML = marks.map(function (m, i) {
+        var durStr = m.duration != null ? '<span style="color:var(--brand);font-weight:600">' + Math.round(m.duration) + ' ms</span>' : '—';
+        var timeStr = '+' + (m.startTime / 1000).toFixed(2) + ' s';
+        
+        var isInternal = m.name.startsWith('action-');
+        var badge = isInternal ? '<span class="pill warn" style="font-size:9px;margin-left:8px">Internal</span>' : '';
+
+        return '<div class="list-card" data-mark-idx="' + i + '">' +
+          '<div class="lh">' +
+            '<div class="lh-left">' +
+              '<span class="lh-chev">▶</span>' +
+              '<span class="lh-name">' + esc(m.name) + badge + '</span>' +
+            '</div>' +
+            '<div style="font-family:var(--mono);font-size:12px;font-weight:600">' + durStr + '</div>' +
+          '</div>' +
+          '<div class="list-detail">' +
+            '<div class="render-row"><span class="rk">Type</span><span class="rv">' + (m.type === 'measure' ? 'performance.measure()' : 'performance.mark()') + '</span></div>' +
+            '<div class="render-row"><span class="rk">Start Time</span><span class="rv">' + timeStr + '</span></div>' +
+            (m.duration != null ? '<div class="render-row"><span class="rk">Duration</span><span class="rv">' + Math.round(m.duration) + ' ms</span></div>' : '') +
+            (isInternal ? '<p style="font-size:11.5px;color:var(--text-mid);margin-top:12px">This is an internal mark generated by the extension to measure paint latency after an action.</p>' : '') +
+          '</div>' +
+        '</div>';
+      }).join('');
+
+      // 3. Setup the individual item click listeners
+      Array.prototype.forEach.call(container.querySelectorAll('.list-card'), function (card) {
+        card.addEventListener('click', function () {
+          var was = card.classList.contains('open');
+          Array.prototype.forEach.call(container.querySelectorAll('.list-card.open'), function (x) { x.classList.remove('open'); });
+          if (!was) card.classList.add('open');
+        });
+      });
+    }
+
+    function renderResources(resources) {
+      var container = document.getElementById('resourcesGrid');
+      if (!container) return;
+
+      try {
+        if (!resources || !resources.length) {
+          container.innerHTML = '<div style="padding:16px;color:var(--text-muted);text-align:center;font-style:italic">No critical CSS or JS resources were captured during this recording.</div>';
+          return;
+        }
+
+        var sorted = resources.slice().sort(function(a, b) { return (a.startTime || 0) - (b.startTime || 0); });
+
+        container.innerHTML = sorted.map(function (r, i) {
+          var isBlocking = (r.startTime || 0) < 1000;
+          var badge = r.type === 'link' ? '<span class="pill bad" style="font-size:9px">CSS</span>' : '<span class="pill warn" style="font-size:9px">JS</span>';
+          var name = shortPath(r.name);
+          return '<div class="list-card" data-res-idx="' + i + '">' +
+            '<div class="lh">' +
+              '<div class="lh-left">' +
+                '<span class="lh-chev">▶</span>' +
+                '<span class="lh-name">' + badge + ' ' + esc(name) + '</span>' +
+              '</div>' +
+              '<div style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-mid)">' + Math.round(r.duration || 0) + ' ms</div>' +
+            '</div>' +
+            '<div class="list-detail">' +
+              '<div class="render-row"><span class="rk">Full URL</span><span class="rv" style="word-break:break-all">' + esc(r.name) + '</span></div>' +
+              '<div class="render-row"><span class="rk">Start Time</span><span class="rv">' + Math.round(r.startTime || 0) + ' ms</span></div>' +
+              '<div class="render-row"><span class="rk">Load Duration</span><span class="rv">' + Math.round(r.duration || 0) + ' ms</span></div>' +
+              '<div class="render-row"><span class="rk">Transfer Size</span><span class="rv">' + fmtSize(r.transferSize || 0) + '</span></div>' +
+              '<p style="font-size:11.5px;color:var(--text-mid);margin-top:12px">' + (isBlocking ? '<strong>This resource loaded early and may be render-blocking.</strong> CSS in the &lt;head&gt; and synchronous JS block the browser from painting the page.' : 'This resource loaded later in the lifecycle.') + '</p>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+
+        Array.prototype.forEach.call(container.querySelectorAll('.list-card'), function (card) {
+          card.addEventListener('click', function () {
+            var was = card.classList.contains('open');
+            Array.prototype.forEach.call(container.querySelectorAll('.list-card.open'), function (x) { x.classList.remove('open'); });
+            if (!was) card.classList.add('open');
+          });
+        });
+      } catch (err) {
+        container.innerHTML = '<div style="padding:16px;color:red;font-size:12px;font-family:var(--mono)">Error rendering resources: ' + esc(err.message) + '</div>';
+      }
+    }
+
+    function initCompare() {
+      var zone = document.getElementById('uploadZone');
+      var input = document.getElementById('fileInput');
+      var results = document.getElementById('compareResults');
+      if (!zone || !input) return;
+
+      zone.addEventListener('click', function () { input.click(); });
+      
+      zone.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        zone.classList.add('dragover');
+      });
+      zone.addEventListener('dragleave', function () { zone.classList.remove('dragover'); });
+      zone.addEventListener('drop', function (e) {
+        e.preventDefault();
+        zone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+      });
+
+      input.addEventListener('change', function (e) {
+        if (e.target.files.length) handleFile(e.target.files[0]);
+      });
+
+      function handleFile(file) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+          var content = e.target.result;
+          var parsed = null;
+
+          try {
+            if (file.name.endsWith('.json') || file.name.endsWith('.har')) {
+              parsed = JSON.parse(content);
+            } else if (file.name.endsWith('.html')) {
+              var match = content.match(/<script id="perf-trace-data" type="application\/json">([\s\S]*?)<\/script>/);
+              if (match && match[1]) parsed = JSON.parse(match[1]);
+            }
+          } catch (err) {
+            results.innerHTML = '<div style="color:red;font-size:12px">Error parsing file: ' + esc(err.message) + '</div>';
+            results.style.display = 'block';
+            return;
+          }
+
+          if (!parsed) {
+            results.innerHTML = '<div style="color:red;font-size:12px">Could not detect report data in the uploaded file. Make sure it is a valid HAR, JSON, or a generated HTML report.</div>';
+            results.style.display = 'block';
+            return;
+          }
+
+          // Extract metrics safely from ANY file type
+          var client = { requests: 0, size: 0, lcp: 0, errors: 0 };
+          
+          if (parsed.log && parsed.log.entries) {
+            // HAR format (Only has Network data)
+            client.requests = parsed.log.entries.length;
+            client.size = parsed.log.entries.reduce(function(a, e) { return a + (e.response.content.size || 0); }, 0);
+          } else if (parsed.network || parsed.summary) {
+            // Our JSON or HTML format
+            client.requests = (parsed.summary && parsed.summary.totalRequests) || (parsed.network ? parsed.network.length : 0);
+            client.size = (parsed.summary && parsed.summary.totalTransferBytes) || (parsed.network ? parsed.network.reduce(function(a, r) { return a + (r.size || r.encodedDataLength || 0); }, 0) : 0);
+            
+            // Extract Errors manually to match our logic
+            if (parsed.network) {
+              var netErrors = parsed.network.filter(function(r) { return Number(r.status) >= 400; }).length;
+              var conErrors = parsed.console ? parsed.console.filter(function(c) { return c.level === 'error' || c.level === 'uncaught'; }).length : 0;
+              client.errors = netErrors + conErrors;
+            }
+            
+            // Extract LCP safely
+            if (parsed.summary && parsed.summary.lcp != null) {
+              client.lcp = parsed.summary.lcp;
+            } else if (parsed.renderingMetrics) {
+              client.lcp = parsed.renderingMetrics.fcp || parsed.renderingMetrics.loadComplete || 0;
+            }
+          }
+
+          renderCompare(parsed.meta ? parsed.meta.name : file.name, client);
+        };
+        reader.readAsText(file);
+      }
+
+      function renderCompare(fileName, client) {
+        // Calculate OUR metrics using the exact same logic as the uploaded file
+        var us = {
+          requests: DATA.length,
+          size: DATA.reduce(function(a, r) { return a + (r.size || 0); }, 0),
+          // Use the real LCP from the summary payload
+          lcp: payload.summary ? (payload.summary.lcp || 0) : (RENDERING_METRICS.fcp || 0),
+          errors: DATA.filter(function(r) { return Number(r.status) >= 400; }).length + CONSOLE.filter(function(c) { return c.level === 'error' || c.level === 'uncaught'; }).length
+        };
+
+        function formatPct(usVal, clientVal) {
+          if (clientVal === 0) return '—';
+          var diff = usVal - clientVal;
+          var pct = Math.round((diff / clientVal) * 100);
+          var color = pct > 0 ? '#b3261e' : pct < 0 ? '#0e6245' : 'inherit';
+          var sign = pct > 0 ? '+' : '';
+          return '<span style="color:' + color + ';font-weight:600">' + sign + pct + '%</span>';
+        }
+
+        var isHar = fileName.endsWith('.har');
+
+        results.innerHTML = '<div class="compare-grid">' +
+          '<div class="compare-box">' +
+            '<div class="compare-box-header">Current Report (Ours)</div>' +
+            '<div class="compare-row"><span class="ck">Total Requests</span><span class="cv">' + us.requests + '</span></div>' +
+            '<div class="compare-row"><span class="ck">Transfer Size</span><span class="cv">' + fmtSize(us.size) + '</span></div>' +
+            '<div class="compare-row"><span class="ck">LCP</span><span class="cv">' + fmtTime(us.lcp) + '</span></div>' +
+            '<div class="compare-row"><span class="ck">Errors</span><span class="cv">' + us.errors + '</span></div>' +
+          '</div>' +
+          '<div class="compare-box">' +
+            '<div class="compare-box-header" style="display:flex;justify-content:space-between;align-items:center">' +
+              '<span>' + esc(fileName) + '</span>' +
+              '<div style="display:flex;gap:6px">' +
+                '<button class="compare-btn primary" id="btnUploadNew">Upload</button>' +
+                '<button class="compare-btn danger" id="btnDeleteCompare">Delete</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="compare-row"><span class="ck">Total Requests</span><span class="cv">' + client.requests + ' ' + formatPct(us.requests, client.requests) + '</span></div>' +
+            '<div class="compare-row"><span class="ck">Transfer Size</span><span class="cv">' + fmtSize(client.size) + ' ' + formatPct(us.size, client.size) + '</span></div>' +
+            '<div class="compare-row"><span class="ck">LCP</span><span class="cv">' + (isHar ? '—' : fmtTime(client.lcp)) + ' ' + (isHar ? '' : formatPct(us.lcp, client.lcp)) + '</span></div>' +
+            '<div class="compare-row"><span class="ck">Errors</span><span class="cv">' + client.errors + ' ' + formatPct(us.errors, client.errors) + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<p style="font-size:11.5px;color:var(--text-mid);margin-top:16px;text-align:center">' + 
+          (isHar ? 'Note: .har files only contain Network data, so LCP is not available for comparison.' : 'Comparison assumes lower is better for Size, LCP, and Errors.') + 
+        '</p>';
+
+        results.style.display = 'block';
+        document.getElementById('compareUploadArea').style.display = 'none';
+
+        document.getElementById('btnUploadNew').addEventListener('click', function() { input.click(); });
+        document.getElementById('btnDeleteCompare').addEventListener('click', function() {
+          results.style.display = 'none';
+          results.innerHTML = '';
+          document.getElementById('compareUploadArea').style.display = 'block';
+          input.value = '';
+        });
+      }
+    }
+
+   function renderNavigationGroups(groups) {
+      var container = document.getElementById('navGroups');
+      var header = document.getElementById('navHeader');
+      var chev = document.getElementById('navChev');
+      if (!container || !header) return;
+
+      // 1. Setup the Expand/Collapse toggle for the whole section
+      if (header.dataset.bound !== '1') {
+        header.dataset.bound = '1';
+        header.addEventListener('click', function() {
+          var isOpen = container.style.display === 'block';
+          container.style.display = isOpen ? 'none' : 'block';
+          if (chev) chev.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+        });
+      }
+      try {
+        if (!Array.isArray(groups)) groups = [];
+
+        if (groups.length === 0) {
+          container.innerHTML = '<div style="padding:16px;color:var(--text-muted);text-align:center;font-style:italic">No navigation segments recorded. Try clicking around or navigating to a new page.</div>';
+          return;
+        }
+
+        container.innerHTML = groups.map(function (g, i) {
+          if (!g) return '';
+          var dur = formatDuration(g.durationMs || 0);
+          var api = g.apiTimeMs > 0 ? formatDuration(g.apiTimeMs) : '—';
+          var fps = g.avgFps > 0 ? g.avgFps + ' fps' : '—';
+          var fpsCls = g.avgFps >= 50 ? 'good' : g.avgFps >= 30 ? 'warn' : g.avgFps > 0 ? 'bad' : '';
+          
+          return '<div class="nav-card" data-nav-idx="' + i + '">' +
+            '<div class="nh">' +
+              '<div class="nh-left">' +
+                '<span class="nh-chev">▶</span>' +
+                '<span class="nh-url" title="' + esc(g.name || 'Unknown Segment') + '">' + esc(g.name || 'Unknown Segment') + '</span>' +
+              '</div>' +
+              '<div class="nh-metrics">' +
+                '<div class="nh-metric"><span class="k">Duration</span><span class="v">' + dur + '</span></div>' +
+                '<div class="nh-metric"><span class="k">API Time</span><span class="v">' + api + '</span></div>' +
+                '<div class="nh-metric ' + fpsCls + '"><span class="k">Avg FPS</span><span class="v">' + fps + '</span></div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="nh-counts">' +
+              '<span><strong>' + (g.actionCount || 0) + '</strong> actions</span>' +
+              '<span><strong>' + (g.requestCount || 0) + '</strong> requests</span>' +
+              '<span><strong>' + (g.longTaskCount || 0) + '</strong> long tasks</span>' +
+            '</div>' +
+            '<div class="nav-detail" data-detail="' + i + '"></div>' +
+          '</div>';
+        }).join('');
+      } catch (err) {
+        container.innerHTML = '<div style="padding:16px;color:red;font-size:12px">Error rendering navigation segments: ' + esc(err.message) + '</div>';
+      }
+
+      Array.prototype.forEach.call(container.querySelectorAll('.nav-card'), function (card) {
+        card.addEventListener('click', function (e) {
+          if (e.target.closest('.nav-detail')) return;
+          var was = card.classList.contains('open');
+          Array.prototype.forEach.call(container.querySelectorAll('.nav-card.open'), function (x) { x.classList.remove('open'); });
+          if (!was) {
+            card.classList.add('open');
+            var idx = parseInt(card.dataset.navIdx, 10);
+            var g = groups[idx];
+            var detailEl = card.querySelector('.nav-detail');
+            if (detailEl && g && !detailEl.dataset.rendered) {
+              detailEl.innerHTML = buildNavDetail(g);
+              detailEl.dataset.rendered = '1';
+            }
+          }
+        });
+      });
+    }
+
+    function buildNavDetail(g) {
+      var groupActions = (g.actionIdxs || []).map(function (idx) { return ACTIONS[idx]; }).filter(Boolean);
+      var groupRequests = (g.requestIds || []).map(function (id) {
+        return DATA.find(function (r) { return r.id === id; });
+      }).filter(Boolean);
+      var groupLongTasks = (g.longtaskIdxs || []).map(function (idx) { return LONG_TASKS[idx]; }).filter(Boolean);
+
+      var h = '';
+      h += '<h4>Actions (' + groupActions.length + ')</h4>';
+      if (groupActions.length) {
+        h += '<div class="nav-detail-list">' + groupActions.slice(0, 20).map(function (a) {
+          var name = a.targetName || (a.target && a.target.displayName) || '—';
+          return '<div class="ni"><strong>' + esc(a.type || '') + '</strong> → ' + esc(name) + '</div>';
+        }).join('') +
+        (groupActions.length > 20 ? '<div class="ni" style="font-style:italic;color:var(--text-muted)">… and ' + (groupActions.length - 20) + ' more</div>' : '') +
+        '</div>';
+      } else {
+        h += '<div class="nav-detail-empty">No actions recorded in this segment.</div>';
+      }
+
+      h += '<h4>Requests (' + groupRequests.length + ')</h4>';
+      if (groupRequests.length) {
+        h += '<div class="nav-detail-list">' + groupRequests.slice(0, 20).map(function (r) {
+          var status = statusText(r.status);
+          return '<div class="ni"><strong>' + esc(r.method || 'GET') + '</strong> ' +
+            '<span style="color:' + (Number(r.status) >= 400 ? '#b3261e' : 'var(--text)') + '">' + esc(status) + '</span> ' +
+            esc(shortPath((r.host || '') + (r.path || '')) || r.name || '') + '</div>';
+        }).join('') +
+        (groupRequests.length > 20 ? '<div class="ni" style="font-style:italic;color:var(--text-muted)">… and ' + (groupRequests.length - 20) + ' more</div>' : '') +
+        '</div>';
+      } else {
+        h += '<div class="nav-detail-empty">No network requests in this segment.</div>';
+      }
+
+      h += '<h4>Long Tasks (' + groupLongTasks.length + ')</h4>';
+      if (groupLongTasks.length) {
+        h += '<div class="nav-detail-list">' + groupLongTasks.map(function (lt) {
+          var attr = lt.attribution || {};
+          var ctx = '';
+          if (attr.containerName || attr.containerType) {
+            ctx = ' [' + (attr.containerType || '') + (attr.containerName ? ': ' + attr.containerName : '') + ']';
+          }
+          return '<div class="ni">' + Math.round(lt.duration || 0) + ' ms' + esc(ctx) + '</div>';
+        }).join('') + '</div>';
+      } else {
+        h += '<div class="nav-detail-empty">No long tasks (&gt; 50 ms) in this segment.</div>';
+      }
+      return h;
+    }
+
     var searchInput = document.getElementById('searchInput');
     if (searchInput) searchInput.addEventListener('input', function (e) { state.search = e.target.value; renderNetwork(); });
     var methodFilter = document.getElementById('methodFilter');
@@ -1174,12 +2411,125 @@
     });
 
     function safe(fn, name) { try { fn(); } catch (e) { console.error('[ReportTheme runtime:' + name + ']', e); } }
+    function initActionableInsights() {
+      var container = document.getElementById('insightsList');
+      if (!container) return;
+      
+      Array.prototype.forEach.call(container.querySelectorAll('.insight-item'), function (item) {
+        item.querySelector('.insight-header').addEventListener('click', function () {
+          item.classList.toggle('open');
+        });
+      });
+    }
+
+       function initAPILeaderboard() {
+      var table = document.getElementById('apiLeadTable');
+      var tbody = document.getElementById('apiLeadBody');
+      var dataScript = document.getElementById('api-data');
+      var header = document.getElementById('apiLeadHeader');
+      var container = document.getElementById('apiLeadContainer');
+      var chev = document.getElementById('apiLeadChev');
+      
+      if (!table || !tbody || !dataScript) return;
+
+      // 1. Setup Expand/Collapse Toggle
+      if (header && container && chev) {
+        header.addEventListener('click', function() {
+          var isOpen = container.style.display === 'block';
+          container.style.display = isOpen ? 'none' : 'block';
+          chev.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+        });
+      }
+
+      var list = JSON.parse(dataScript.textContent);
+      var currentSort = 'avgTime';
+      var isAsc = false;
+
+      function bindRowClicks() {
+        Array.prototype.forEach.call(tbody.querySelectorAll('tr[data-search]'), function(row) {
+          row.addEventListener('click', function() {
+            var searchTerm = row.getAttribute('data-search');
+            var netTab = document.querySelector('.tab[data-tab="network"]');
+            if (netTab) netTab.click();
+            var searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+              searchInput.value = searchTerm;
+              state.search = searchTerm;
+              renderNetwork();
+            }
+          });
+        });
+      }
+
+      bindRowClicks();
+
+      Array.prototype.forEach.call(table.querySelectorAll('th[data-sort]'), function(th) {
+        th.addEventListener('click', function() {
+          var sortKey = th.getAttribute('data-sort');
+          
+          if (currentSort === sortKey) {
+            isAsc = !isAsc;
+          } else {
+            currentSort = sortKey;
+            isAsc = false; 
+          }
+
+          var sortedList = list.slice().sort(function(a, b) {
+            var valA = a[currentSort];
+            var valB = b[currentSort];
+            if (typeof valA === 'string') {
+              return isAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+            } else {
+              return isAsc ? valA - valB : valB - valA;
+            }
+          });
+
+          tbody.innerHTML = sortedList.map(function(g) {
+            var avgCls = g.avgTime > 1000 ? 'time-bad' : g.avgTime > 500 ? 'time-warn' : '';
+            var failCls = g.failRate > 0 ? 'fail-bad' : '';
+            var mCls = g.method === 'GET' ? 'background:#e0e7ff;color:#3730a3' : 
+                       g.method === 'POST' ? 'background:#fef3c7;color:#92400e' : 
+                       g.method === 'PUT' || g.method === 'PATCH' ? 'background:#ede9fe;color:#6d28d9' : 
+                       'background:#fee2e2;color:#b3261e';
+            
+            var searchTerm = g.url.replace(/\/:id|\/:uuid/g, '');
+            
+            // Truncate massive Base64 strings for display only
+            var displayUrl = g.url;
+            if (displayUrl.length > 100) {
+              displayUrl = displayUrl.substring(0, 100) + '... [Truncated]';
+            }
+            
+            return '<tr data-search="' + escapeHtml(searchTerm) + '" style="cursor:pointer" title="Click to filter Network tab">' +
+              '<td><span class="pill method" style="' + mCls + '">' + g.method + '</span></td>' +
+              '<td class="endpoint">' + escapeHtml(displayUrl) + '</td>' +
+              '<td style="text-align:right">' + g.calls + '</td>' +
+              '<td style="text-align:right" class="' + avgCls + '">' + Math.round(g.avgTime) + ' ms</td>' +
+              '<td style="text-align:right">' + Math.round(g.maxTime) + ' ms</td>' +
+              '<td style="text-align:right" class="' + failCls + '">' + (g.failures > 0 ? g.failures + ' (' + g.failRate + '%)' : '0') + '</td>' +
+            '</tr>';
+          }).join('');
+
+          bindRowClicks();
+        });
+      });
+    }
     safe(renderTimingLines, 'timingLines');
+    safe(initAPILeaderboard, 'apiLeaderboard');
+    safe(initActionableInsights, 'insights');
     safe(renderNetwork,     'network');
     safe(renderAttachments, 'attachments');
     safe(renderConsole,     'console');
     safe(renderRaw,         'raw');
     safe(initRiskDrill,     'riskDrill');
+    safe(function () { renderFPS(FPS); }, 'fps');
+    safe(function () { renderRenderingMetrics(RENDERING_METRICS); }, 'renderingMetrics');
+    safe(function () { renderNavigationGroups(NAV_GROUPS); }, 'navigationGroups');
+    safe(function () { renderMemoryChart(); }, 'memoryChart');
+    safe(function () { renderBaseline(BASELINE); }, 'baseline');
+    safe(function () { renderCustomMarks(CUSTOM_MARKS); }, 'customMarks');
+    safe(function () { renderResources(RESOURCES); }, 'resources');
+    safe(initCompare, 'compare');
   }
 
   /* ======================= MAIN ENTRY POINT ============================ */
@@ -1193,7 +2543,22 @@
     var consoleData = transformConsole(report.console || []);
     var riskData    = buildRiskData(health);
 
-    var payload = { network: netData, screenshots: screenshots, console: consoleData, riskData: riskData };
+    var payload = {
+      network:          netData,
+      screenshots:      screenshots,
+      console:          consoleData,
+      riskData:         riskData,
+      actions:          report.actions || [],
+      fps:              report.fps || [],
+      longTasks:        report.longTasks || [],
+      navigationGroups: report.navigationGroups || [],
+      renderingMetrics: report.renderingMetrics || {},
+      baseline:         report.baseline || null,
+      customMarks:      report.customMarks || [],
+      resources:        report.resources || [],
+      memory:           report.memory || [],
+      summary:          report.summary || {}
+    };
 
     var payloadJSON = JSON.stringify(payload).replace(/<\/(script|SCRIPT)/g, '<\\/$1');
     var runtimeSource = Runtime.toString().replace(/<\/(script|SCRIPT)/g, '<\\/$1');
@@ -1204,24 +2569,33 @@
 
     var h = '';
     h += '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>';
-    h += '<title>' + escapeHtml((report.meta && report.meta.name) || 'Perf Trace Report') + ' — Perf-Trace-Pulse</title>';
+    h += '<title>' + escapeHtml((report.meta && report.meta.name) || 'Perf Trace Report') + ' — Perf-Lens</title>';
     h += '<style>' + CSS + '</style>';
     h += '</head><body>';
 
-    h += buildHero(report);
     h += buildReportHeader(report, health);
-
     h += '<div class="wrap">';
+    h += buildActionableInsightsHTML(report);
     h += buildExecutiveSummary(report, health);
     h += buildPerformanceOverview(report);
     h += buildStatsStrip(report);
     h += buildTimingLinesHTML(report);
     h += buildWebVitalsHTML(report);
+    h += buildFPSCardHTML(report);           
+    h += buildRenderingMetricsHTML(report);
+    h += buildBaselineHTML(report);          
+    h += buildCustomMarksHTML(report);       
+    h += buildResourceTimingHTML(report);
+    h += buildMemoryChartHTML(report);    
     h += buildRiskGridHTML(health);
+     h += buildAPILeaderboardHTML(report);
+    h += buildNavigationGroupsHTML(report);  
+    h += buildCompareHTML(report);           
     h += buildTabsHTML(report);
     h += buildTabPanelHTML(report);
     h += '</div>';
 
+    h += '<script id="perf-trace-data" type="application/json">' + payloadJSON + '</script>';
     h += '<div class="chart-tooltip" id="chartTooltip"></div>';
     h += '<scr' + 'ipt>' + runtimeInline + '</scr' + 'ipt>';
     h += '</body></html>';
@@ -1231,7 +2605,7 @@
 
   function debug() {
     var info = {
-      version: '4.6.0',
+      version: '5.4.0',
       hasBuild: typeof buildSelfContainedHTML === 'function',
       host: typeof window !== 'undefined' ? 'window' : typeof self !== 'undefined' ? 'self' : 'unknown'
     };
@@ -1243,11 +2617,10 @@
   }
 
   var API = {
-    version: '4.6.0',
+    version: '5.4.0',
     buildSelfContainedHTML: buildSelfContainedHTML,
     debug: debug,
     escapeHtml: escapeHtml,
-    formatDuration: formatDuration,
     safeDurationMs: safeDurationMs,
     shortPath: shortPath,
     transformNetworkItem: transformNetworkItem,
@@ -1260,7 +2633,7 @@
   if (typeof globalThis !== 'undefined') globalThis.ReportTheme = API;
 
   if (typeof console !== 'undefined' && console.log) {
-    console.log('[ReportTheme] v' + API.version + ' loaded. buildSelfContainedHTML = ' + typeof API.buildSelfContainedHTML);
+    console.log('[Perf-Lens ReportTheme] v' + API.version + ' loaded. buildSelfContainedHTML = ' + typeof API.buildSelfContainedHTML);
   }
 
 })(typeof globalThis !== 'undefined' ? globalThis
