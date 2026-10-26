@@ -39,7 +39,7 @@ const AdmZip = require('adm-zip');
             type: 'START_RECORDING',
             name: 'CI_Automated_Run',
             tabId: tabId,
-            throttle: 'cpu4x', // Simulate slow device
+            throttle: 'none', // speed // 'fast3g' 'slow3g' 'cpu4x' Simulate slow device
             skipReload: true   // Don't break Playwright context
         }, r));
     });
