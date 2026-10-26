@@ -69,31 +69,48 @@ const AdmZip = require('adm-zip');
         console.log('⏹️ Stopping Recording...');
         await sw.evaluate(() => new Promise(r => chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }, r)));
 
-        // --- NEW FIX: WAIT FOR REPORT GENERATION ---
-        console.log('⏳ Waiting 5 seconds for Service Worker to build the report...');
-        await new Promise(r => setTimeout(r, 5000));
+        console.log('⏳ Waiting 4 seconds for Service Worker to build the report...');
+        await new Promise(r => setTimeout(r, 4000));
 
-        console.log('📦 Opening Panel to download...');
+        console.log('📦 Opening Panel to extract ZIP...');
         const panelPage = await context.newPage();
+        
+        // Intercept the chrome.downloads API before the page loads its scripts
+        await panelPage.addInitScript(() => {
+            window.chrome = window.chrome || {};
+            window.chrome.downloads = {
+                download: async (options) => {
+                    try {
+                        const res = await fetch(options.url);
+                        const arrayBuffer = await res.arrayBuffer();
+                        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+                        window.__PERF_LENS_ZIP_BASE64__ = base64;
+                        return 1;
+                    } catch (e) {
+                        console.error("Failed to intercept ZIP", e);
+                    }
+                }
+            };
+        });
+
         await panelPage.goto(`chrome-extension://${extensionId}/src/panel.html`);
         
-        // --- NEW FIX: FORCE THE BUTTON TO BE VISIBLE ---
         console.log('🔓 Forcing download button to appear...');
         await panelPage.evaluate(() => {
             const btn = document.getElementById('downloadZipBtn');
             if (btn) btn.classList.remove('hidden');
         });
         
-        await panelPage.waitForSelector('#downloadZipBtn', { state: 'visible', timeout: 10000 });
-        
-        console.log('Clicking Download...');
-        const downloadPromise = panelPage.waitForEvent('download', { timeout: 15000 });
+        console.log('Clicking Download and intercepting ZIP...');
         await panelPage.click('#downloadZipBtn');
+
+        console.log('Waiting for ZIP data in memory...');
+        await panelPage.waitForFunction(() => window.__PERF_LENS_ZIP_BASE64__ !== undefined, { timeout: 20000 });
         
-        console.log('Waiting for download to finish...');
-        const download = await downloadPromise;
-        await download.saveAs(zipPath);
-        console.log(`✅ Report Downloaded to ${zipPath}`);
+        const base64Data = await panelPage.evaluate(() => window.__PERF_LENS_ZIP_BASE64__);
+        
+        fs.writeFileSync(zipPath, Buffer.from(base64Data, 'base64'));
+        console.log(`✅ Report extracted and saved to ${zipPath}`);
 
         if (fs.existsSync(zipPath)) {
             const zip = new AdmZip(zipPath);
