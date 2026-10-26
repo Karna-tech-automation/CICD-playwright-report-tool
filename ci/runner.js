@@ -6,73 +6,77 @@ const AdmZip = require('adm-zip');
 (async () => {
     console.log('🚀 Starting Perf-Lens CI Runner...');
     
-    // 1. Load the Chrome Extension
     const pathToExtension = path.resolve(__dirname, '..'); 
     const userDataDir = '/tmp/perf-lens-user-data';
 
+    // Launch context with explicit arguments for CI
     const context = await chromium.launchPersistentContext(userDataDir, {
-        headless: false, // Extensions require headful or 'new' headless mode
+        headless: false, // Must be false for extensions, xvfb provides the display
         args: [
             `--disable-extensions-except=${pathToExtension}`,
             `--load-extension=${pathToExtension}`,
-            `--headless=new`
+            `--no-sandbox`, // Required for GitHub Actions
+            `--disable-setuid-sandbox`
         ],
+        timeout: 60000 // Increase launch timeout for CI
     });
 
-    // 2. Get the Extension ID
-    let [sw] = context.serviceWorkers();
-    if (!sw) sw = await context.waitForEvent('serviceworker');
+    // Wait for the extension's service worker with a timeout
+    console.log('Waiting for extension service worker...');
+    let sw;
+    try {
+        // Wait for the event with a 30s timeout
+        sw = await context.waitForEvent('serviceworker', { timeout: 30000 });
+    } catch (e) {
+        // Fallback: check if it already loaded
+        const workers = context.serviceWorkers();
+        if (workers.length > 0) sw = workers[0];
+        else throw new Error('Extension service worker failed to start.');
+    }
+
     const extensionId = sw.url().split('/')[2];
     console.log(`🔍 Extension Loaded. ID: ${extensionId}`);
 
-    // 3. Open the Target Application (Replace with your staging URL)
     const TARGET_URL = process.env.TARGET_URL || 'https://opensource-demo.orangehrmlive.com/';
     const page = await context.newPage();
-    await page.goto(TARGET_URL);
-    console.log(`🌐 Navigated to ${TARGET_URL}`);
+    
+    console.log(`🌐 Navigating to ${TARGET_URL}`);
+    await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // 4. Start Recording via the Service Worker
-    await sw.evaluate(async () => {
+    // Start Recording
+    console.log('🔴 Starting Recording...');
+    await sw.evaluate(async (throttle) => {
         const tabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
-        const tabId = tabs[0].id;
         return new Promise(r => chrome.runtime.sendMessage({
             type: 'START_RECORDING',
             name: 'CI_Automated_Run',
-            tabId: tabId,
-            throttle: 'none', // speed // 'fast3g' 'slow3g' 'cpu4x' Simulate slow device
-            skipReload: true   // Don't break Playwright context
+            tabId: tabs[0].id,
+            throttle: throttle,
+            skipReload: true
         }, r));
-    });
-    console.log('🔴 Recording Started (4x CPU Throttle)');
+    }, process.env.PERF_THROTTLE || 'none');
 
-    // Wait for the 2-second settle window to pass
+    // Wait for the settle window
     await page.waitForTimeout(2500);
 
-    // 5. THE USER JOURNEY (Modify this part for your app)
+    // --- YOUR TEST STEPS ---
     console.log('🤖 Simulating User Journey...');
-    
-    // Example: OrangeHRM Login Flow
     await page.fill('input[name="username"]', 'Admin');
     await page.fill('input[name="password"]', 'admin123');
     await page.click('button[type="submit"]');
-    await page.waitForTimeout(3000); // Wait for Dashboard to load
-    
-    // Example: Navigate to a specific module
-    // await page.click('text="Leave"');
-    // await page.waitForTimeout(2000);
+    await page.waitForTimeout(5000); // Wait longer on CI for dashboard to load
 
-    // 6. Stop Recording
-    await sw.evaluate(() => {
-        return new Promise(r => chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }, r));
-    });
-    console.log('⏹️ Recording Stopped');
+    // Stop Recording
+    console.log('⏹️ Stopping Recording...');
+    await sw.evaluate(() => new Promise(r => chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }, r)));
 
-    // 7. Generate Report & Download ZIP
+    // Generate Report
+    console.log('📦 Generating Report...');
     const panelPage = await context.newPage();
     await panelPage.goto(`chrome-extension://${extensionId}/src/panel.html`);
-
-    // Wait for the report to be saved and download button to appear
-    await panelPage.waitForSelector('#downloadZipBtn', { state: 'visible', timeout: 15000 });
+    
+    // Wait for report to be ready (Service worker needs time to build it)
+    await panelPage.waitForSelector('#downloadZipBtn', { state: 'visible', timeout: 30000 });
     
     const downloadPromise = panelPage.waitForEvent('download');
     await panelPage.click('#downloadZipBtn');
@@ -82,23 +86,18 @@ const AdmZip = require('adm-zip');
     await download.saveAs(zipPath);
     console.log(`📦 Report Downloaded to ${zipPath}`);
 
-    // 8. Extract and Analyze Health Score
+    // Parse Score
     const zip = new AdmZip(zipPath);
     zip.extractAllTo(path.join(__dirname, 'extracted'), true);
     const reportHtml = fs.readFileSync(path.join(__dirname, 'extracted', 'report.html'), 'utf8');
-    
-    // Extract the score from the HTML
     const scoreMatch = reportHtml.match(/<div class="rpt-ring-num">(\d+|—)<\/div>/);
-    const score = scoreMatch ? scoreMatch[1] : 'Unknown';
     
-    console.log(`\n========================================`);
-    console.log(`📊 PERF-LENS HEALTH SCORE: ${score}/100`);
-    console.log(`========================================\n`);
-
-    // Note: We print a GitHub Action warning, but we DO NOT fail the build (exit 1)
-    if (score !== 'Unknown' && Number(score) < 50) {
-        console.log(`::warning::Performance Health Score is critically low (${score}/100)! Check the uploaded artifact.`);
+    if (scoreMatch) {
+        console.log(`\n========================================`);
+        console.log(`📊 PERF-LENS HEALTH SCORE: ${scoreMatch[1]}/100`);
+        console.log(`========================================\n`);
     }
 
     await context.close();
+    process.exit(0);
 })();

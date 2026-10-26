@@ -3,11 +3,12 @@ name: Automated Performance Test
 on:
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Allows you to run it manually from the Actions tab
+  workflow_dispatch: 
 
 jobs:
   run-perf-lens:
     runs-on: ubuntu-latest
+    timeout-minutes: 15 # Prevents hanging forever
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -20,17 +21,18 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install
-          npx playwright install chromium
-          npx playwright install-deps chromium
+          npx playwright install --with-deps chromium
 
       - name: Run Perf-Lens Headless Test
-        run: npm run perf-test
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npm run perf-test
         env:
-          TARGET_URL: "https://opensource-demo.orangehrmlive.com/" # Change this to your staging URL
+          TARGET_URL: "https://opensource-demo.orangehrmlive.com/"
+          PERF_THROTTLE: "none" # Set to none as you requested
 
       - name: Upload Performance Report Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Perf-Lens-Report
           path: ci/ci-report.zip
+          if-no-files-found: warn # Prevents a hard failure if the report isn't generated
           retention-days: 14
