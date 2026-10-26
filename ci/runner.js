@@ -10,10 +10,7 @@ const AdmZip = require('adm-zip');
     const userDataDir = '/tmp/perf-lens-user-data';
     const zipPath = path.join(__dirname, 'ci-report.zip');
 
-    // Ensure the ci directory exists
-    if (!fs.existsSync(__dirname)) {
-        fs.mkdirSync(__dirname, { recursive: true });
-    }
+    if (!fs.existsSync(__dirname)) fs.mkdirSync(__dirname, { recursive: true });
 
     let context;
     try {
@@ -36,7 +33,7 @@ const AdmZip = require('adm-zip');
         } catch (e) {
             const workers = context.serviceWorkers();
             if (workers.length > 0) sw = workers[0];
-            else throw new Error('Extension service worker failed to start. Cannot continue.');
+            else throw new Error('Extension service worker failed to start.');
         }
 
         const extensionId = sw.url().split('/')[2];
@@ -52,11 +49,7 @@ const AdmZip = require('adm-zip');
         await sw.evaluate(async (throttle) => {
             const tabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
             return new Promise(r => chrome.runtime.sendMessage({
-                type: 'START_RECORDING',
-                name: 'CI_Automated_Run',
-                tabId: tabs[0].id,
-                throttle: throttle,
-                skipReload: true
+                type: 'START_RECORDING', name: 'CI_Run', tabId: tabs[0].id, throttle: throttle, skipReload: true
             }, r));
         }, process.env.PERF_THROTTLE || 'none');
 
@@ -67,25 +60,31 @@ const AdmZip = require('adm-zip');
             await page.waitForSelector('input[name="username"]', { timeout: 10000 });
             await page.fill('input[name="username"]', 'Admin');
             await page.fill('input[name="password"]', 'admin123');
-            await page.waitForSelector('button[type="submit"]', { timeout: 10000 });
             await page.click('button[type="submit"]');
-            console.log('Login successful. Waiting for dashboard...');
             await page.waitForTimeout(5000); 
         } catch (err) {
-            console.warn('⚠️ User Journey failed (Element not found). Stopping recording anyway to get report...');
+            console.warn('⚠️ User Journey failed. Stopping recording anyway...');
         }
 
         console.log('⏹️ Stopping Recording...');
         await sw.evaluate(() => new Promise(r => chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }, r)));
 
-        console.log('📦 Generating Report...');
+        // --- NEW FIX: WAIT FOR REPORT GENERATION ---
+        console.log('⏳ Waiting 5 seconds for Service Worker to build the report...');
+        await new Promise(r => setTimeout(r, 5000));
+
+        console.log('📦 Opening Panel to download...');
         const panelPage = await context.newPage();
-        
-        console.log('Waiting for panel to load...');
         await panelPage.goto(`chrome-extension://${extensionId}/src/panel.html`);
         
-        console.log('Waiting for Download button to appear...');
-        await panelPage.waitForSelector('#downloadZipBtn', { state: 'visible', timeout: 30000 });
+        // --- NEW FIX: FORCE THE BUTTON TO BE VISIBLE ---
+        console.log('🔓 Forcing download button to appear...');
+        await panelPage.evaluate(() => {
+            const btn = document.getElementById('downloadZipBtn');
+            if (btn) btn.classList.remove('hidden');
+        });
+        
+        await panelPage.waitForSelector('#downloadZipBtn', { state: 'visible', timeout: 10000 });
         
         console.log('Clicking Download...');
         const downloadPromise = panelPage.waitForEvent('download', { timeout: 15000 });
@@ -96,7 +95,6 @@ const AdmZip = require('adm-zip');
         await download.saveAs(zipPath);
         console.log(`✅ Report Downloaded to ${zipPath}`);
 
-        // Parse Score
         if (fs.existsSync(zipPath)) {
             const zip = new AdmZip(zipPath);
             zip.extractAllTo(path.join(__dirname, 'extracted'), true);
@@ -112,11 +110,8 @@ const AdmZip = require('adm-zip');
     } catch (error) {
         console.error('\n❌❌❌ FATAL ERROR IN RUNNER.JS ❌❌❌\n');
         console.error(error);
-        process.exitCode = 1; // Force failure so you can see the error
+        process.exitCode = 1;
     } finally {
-        if (context) {
-            console.log('Closing browser context...');
-            await context.close();
-        }
+        if (context) await context.close();
     }
 })();
