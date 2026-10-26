@@ -23,6 +23,7 @@ const AdmZip = require('adm-zip');
                 `--no-sandbox`,
                 `--disable-setuid-sandbox`
             ],
+            acceptDownloads: true,
             timeout: 60000
         });
 
@@ -75,21 +76,19 @@ const AdmZip = require('adm-zip');
         console.log('📦 Opening Panel to extract ZIP...');
         const panelPage = await context.newPage();
         
-        // Intercept the chrome.downloads API before the page loads its scripts
+        // THIS IS THE FIX: Intercept the Blob URL creation
         await panelPage.addInitScript(() => {
-            window.chrome = window.chrome || {};
-            window.chrome.downloads = {
-                download: async (options) => {
-                    try {
-                        const res = await fetch(options.url);
-                        const arrayBuffer = await res.arrayBuffer();
-                        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-                        window.__PERF_LENS_ZIP_BASE64__ = base64;
-                        return 1;
-                    } catch (e) {
-                        console.error("Failed to intercept ZIP", e);
+            window.__PERF_LENS_ZIP_BASE64__ = null;
+            const originalCreateObjectURL = URL.createObjectURL;
+            URL.createObjectURL = function(blob) {
+                const reader = new FileReader();
+                reader.onload = function() {
+                    if (reader.result) {
+                        window.__PERF_LENS_ZIP_BASE64__ = reader.result.split(',')[1];
                     }
-                }
+                };
+                reader.readAsDataURL(blob);
+                return originalCreateObjectURL.call(URL, blob);
             };
         });
 
@@ -105,10 +104,12 @@ const AdmZip = require('adm-zip');
         await panelPage.click('#downloadZipBtn');
 
         console.log('Waiting for ZIP data in memory...');
-        await panelPage.waitForFunction(() => window.__PERF_LENS_ZIP_BASE64__ !== undefined, { timeout: 20000 });
+        await panelPage.waitForFunction(() => window.__PERF_LENS_ZIP_BASE64__ !== null, { timeout: 30000 });
         
         const base64Data = await panelPage.evaluate(() => window.__PERF_LENS_ZIP_BASE64__);
         
+        if (!base64Data) throw new Error("No ZIP data captured.");
+
         fs.writeFileSync(zipPath, Buffer.from(base64Data, 'base64'));
         console.log(`✅ Report extracted and saved to ${zipPath}`);
 
