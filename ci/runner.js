@@ -70,59 +70,53 @@ const AdmZip = require('adm-zip');
         console.log('⏹️ Stopping Recording...');
         await sw.evaluate(() => new Promise(r => chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }, r)));
 
-        console.log('⏳ Waiting 4 seconds for Service Worker to build the report...');
+        console.log('⏳ Waiting 4 seconds for Service Worker to save the JSON data...');
         await new Promise(r => setTimeout(r, 4000));
 
-        console.log('📦 Opening Panel to extract ZIP...');
-        const panelPage = await context.newPage();
+        // ==============================================================
+        // NEW BULLETPROOF EXTRACTION: Get JSON directly from Storage, 
+        // generate HTML via the extension's own script, and save to disk.
+        // ==============================================================
         
-        // THIS IS THE FIX: Intercept the Blob URL creation
-        await panelPage.addInitScript(() => {
-            window.__PERF_LENS_ZIP_BASE64__ = null;
-            const originalCreateObjectURL = URL.createObjectURL;
-            URL.createObjectURL = function(blob) {
-                const reader = new FileReader();
-                reader.onload = function() {
-                    if (reader.result) {
-                        window.__PERF_LENS_ZIP_BASE64__ = reader.result.split(',')[1];
-                    }
-                };
-                reader.readAsDataURL(blob);
-                return originalCreateObjectURL.call(URL, blob);
-            };
-        });
+        console.log('📦 Extracting raw JSON from chrome.storage...');
+        const storageData = await sw.evaluate(() => new Promise(r => chrome.storage.local.get('lastReport', r)));
+        
+        if (!storageData || !storageData.lastReport) {
+            throw new Error("Could not find lastReport in chrome.storage.");
+        }
+        const report = storageData.lastReport;
 
+        console.log('🎨 Opening Panel to generate HTML via reportTheme.js...');
+        const panelPage = await context.newPage();
         await panelPage.goto(`chrome-extension://${extensionId}/src/panel.html`);
         
-        console.log('🔓 Forcing download button to appear...');
-        await panelPage.evaluate(() => {
-            const btn = document.getElementById('downloadZipBtn');
-            if (btn) btn.classList.remove('hidden');
-        });
-        
-        console.log('Clicking Download and intercepting ZIP...');
-        await panelPage.click('#downloadZipBtn');
+        // Use the extension's own code to generate the HTML
+        const htmlContent = await panelPage.evaluate((rep) => {
+            let health = null;
+            if (window.PerfHealth) health = window.PerfHealth.computeHealth(rep);
+            if (window.ReportTheme) return window.ReportTheme.buildSelfContainedHTML(rep, health);
+            return null;
+        }, report);
 
-        console.log('Waiting for ZIP data in memory...');
-        await panelPage.waitForFunction(() => window.__PERF_LENS_ZIP_BASE64__ !== null, { timeout: 30000 });
-        
-        const base64Data = await panelPage.evaluate(() => window.__PERF_LENS_ZIP_BASE64__);
-        
-        if (!base64Data) throw new Error("No ZIP data captured.");
+        if (!htmlContent) throw new Error("Failed to generate HTML via reportTheme.js.");
 
-        fs.writeFileSync(zipPath, Buffer.from(base64Data, 'base64'));
-        console.log(`✅ Report extracted and saved to ${zipPath}`);
+        // Write the HTML to disk
+        const htmlPath = path.join(__dirname, 'report.html');
+        fs.writeFileSync(htmlPath, htmlContent, 'utf8');
+        console.log(`✅ HTML Report generated at ${htmlPath}`);
 
-        if (fs.existsSync(zipPath)) {
-            const zip = new AdmZip(zipPath);
-            zip.extractAllTo(path.join(__dirname, 'extracted'), true);
-            const reportHtml = fs.readFileSync(path.join(__dirname, 'extracted', 'report.html'), 'utf8');
-            const scoreMatch = reportHtml.match(/<div class="rpt-ring-num">(\d+|—)<\/div>/);
-            if (scoreMatch) {
-                console.log(`\n========================================`);
-                console.log(`📊 PERF-LENS HEALTH SCORE: ${scoreMatch[1]}/100`);
-                console.log(`========================================\n`);
-            }
+        // Zip it up using Node.js (AdmZip)
+        const zip = new AdmZip();
+        zip.addLocalFile(htmlPath);
+        zip.writeZip(zipPath);
+        console.log(`✅ ZIP created at ${zipPath}`);
+
+        // Log the Health Score
+        const scoreMatch = htmlContent.match(/<div class="rpt-ring-num">(\d+|—)<\/div>/);
+        if (scoreMatch) {
+            console.log(`\n========================================`);
+            console.log(`📊 PERF-LENS HEALTH SCORE: ${scoreMatch[1]}/100`);
+            console.log(`========================================\n`);
         }
 
     } catch (error) {
