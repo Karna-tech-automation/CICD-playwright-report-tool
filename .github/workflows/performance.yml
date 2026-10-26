@@ -1,3 +1,45 @@
+# name: Automated Performance Test
+
+# on:
+#   pull_request:
+#     branches: [ "main", "master" ]
+#   workflow_dispatch: 
+
+# jobs:
+#   run-perf-lens:
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 15 # Prevents hanging forever
+#     steps:
+#       - name: Checkout Code
+#         uses: actions/checkout@v4
+
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: '20'
+
+#       - name: Install Dependencies
+#         run: |
+#           npm install
+#           npx playwright install --with-deps chromium
+
+#       - name: Run Perf-Lens Headless Test
+#         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npm run perf-test
+#         env:
+#           TARGET_URL: "https://opensource-demo.orangehrmlive.com/"
+#           PERF_THROTTLE: "none" # Set to none as you requested
+
+#       - name: Upload Performance Report Artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: Perf-Lens-Report
+#           path: ci/ci-report.zip
+#           if-no-files-found: warn # Prevents a hard failure if the report isn't generated
+#           retention-days: 14
+
+
+
+
 name: Automated Performance Test
 
 on:
@@ -8,7 +50,7 @@ on:
 jobs:
   run-perf-lens:
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # Prevents hanging forever
+    timeout-minutes: 15 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -17,22 +59,34 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm' # ⚡ CACHES YOUR NPM PACKAGES (adm-zip, playwright, etc.)
+
+      # ⚡ CACHES THE CHROMIUM BROWSER BINARY
+      - name: Cache Playwright Browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
       - name: Install Dependencies
         run: |
           npm install
+          # This will skip the download if the cache was hit
           npx playwright install --with-deps chromium
 
       - name: Run Perf-Lens Headless Test
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npm run perf-test
         env:
           TARGET_URL: "https://opensource-demo.orangehrmlive.com/"
-          PERF_THROTTLE: "none" # Set to none as you requested
+          PERF_THROTTLE: "none"
 
       - name: Upload Performance Report Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Perf-Lens-Report
           path: ci/ci-report.zip
-          if-no-files-found: warn # Prevents a hard failure if the report isn't generated
+          if-no-files-found: warn 
           retention-days: 14
