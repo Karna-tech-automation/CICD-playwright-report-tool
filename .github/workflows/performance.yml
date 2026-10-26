@@ -31,6 +31,7 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install
+          chmod +x node_modules/.bin/*
           npx playwright install --with-deps chromium
 
       - name: Run Perf-Lens Headless Test
