@@ -1,0 +1,12 @@
+{
+  "name": "perf-lens-ci",
+  "version": "1.0.0",
+  "description": "CI/CD Performance Testing with Perf-Lens",
+  "scripts": {
+    "perf-test": "node ci/runner.js"
+  },
+  "dependencies": {
+    "playwright": "^1.42.0",
+    "adm-zip": "^0.5.10"
+  }
+}

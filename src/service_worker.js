@@ -202,7 +202,7 @@ async function enableNetwork(tabId) {
   }
 }
 
-async function startRecording(name, tabId, throttle) {
+async function startRecording(name, tabId, throttle, skipReload) {
   if (activeRecording) throw new Error('Already recording');
 
   activeRecording = {
@@ -251,13 +251,15 @@ async function startRecording(name, tabId, throttle) {
         }
       } catch (_) {}
 
-      broadcastToPanel({ type: 'RELOADING' });
-      try {
-        const loadPromise = waitForLoad(tabId, 6000);
-        await chrome.debugger.sendCommand({ tabId }, 'Page.reload', { ignoreCache: false });
-        await loadPromise;
-        await new Promise((r) => setTimeout(r, 1200));
-      } catch (e) { console.warn('Reload failed:', e.message); }
+      if (!skipReload) {
+        broadcastToPanel({ type: 'RELOADING' });
+        try {
+          const loadPromise = waitForLoad(tabId, 6000);
+          await chrome.debugger.sendCommand({ tabId }, 'Page.reload', { ignoreCache: false });
+          await loadPromise;
+          await new Promise((r) => setTimeout(r, 1200));
+        } catch (e) { console.warn('Reload failed:', e.message); }
+      }
 
       for (const d of ['Runtime', 'Log']) {
         try { await chrome.debugger.sendCommand({ tabId }, d + '.enable'); } catch (_) {}
@@ -590,7 +592,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 async function handleMessage(msg, sender) {
   switch (msg.type) {
-    case 'START_RECORDING': return startRecording(msg.name, msg.tabId);
+        case 'START_RECORDING': return startRecording(msg.name, msg.tabId, msg.throttle, msg.skipReload);
     case 'STOP_RECORDING': return stopRecording();
     case 'CANCEL_RECORDING': return cancelRecording();
 
